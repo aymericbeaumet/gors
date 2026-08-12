@@ -312,21 +312,22 @@ func main() {
         7,
         "constraint requires",
     );
-
-    assert_method_constraint_diagnostic(
-        r#"package main
-type Producer[T any] interface { Produce() T }
-func produce[P Producer[T], T any](value P) T { return value.Produce() }
-type Phantom[T any] struct{}
-func (Phantom[T]) Produce() T { var zero T; return zero }
-func main() {
-    _ = produce(Phantom[int]{})
 }
-"#,
-        "GORS2001",
-        7,
-        "cannot recover generic receiver type arguments T",
+
+#[test]
+fn phantom_generic_receiver_arguments_come_from_the_instantiated_identity() {
+    let run = compile_and_run(
+        r#"
+            package main
+            type Producer[T any] interface { Produce() T }
+            func produce[P Producer[T], T any](value P) T { return value.Produce() }
+            type Phantom[T any] struct{}
+            func (Phantom[T]) Produce() T { var zero T; return zero }
+            func main() { println(produce(Phantom[int]{})) }
+        "#,
     );
+
+    assert_eq!(run.stderr, b"0\n");
 }
 
 #[test]

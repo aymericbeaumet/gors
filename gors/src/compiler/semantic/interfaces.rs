@@ -521,7 +521,7 @@ impl FunctionLowerer {
         expected: &Ty,
         source: SourceRef,
     ) -> Result<hir::ValueCoercion, Diagnostic> {
-        if actual == expected {
+        if actual.is_identical_to(expected) {
             return Ok(hir::ValueCoercion::Identity);
         }
         let Ty::Interface(expected_methods) = expected.underlying() else {
@@ -597,9 +597,26 @@ impl FunctionLowerer {
             resolve_method_set_member(concrete, &required.name, &self.methods, source).is_ok_and(
                 |method| {
                     method.symbol.signature.variadic == required.signature.variadic
-                        && method.symbol.signature.params.get(1..)
-                            == Some(&required.signature.params)
-                        && method.symbol.signature.results == required.signature.results
+                        && method
+                            .symbol
+                            .signature
+                            .params
+                            .get(1..)
+                            .is_some_and(|params| {
+                                params.len() == required.signature.params.len()
+                                    && params
+                                        .iter()
+                                        .zip(&required.signature.params)
+                                        .all(|(actual, expected)| actual.is_identical_to(expected))
+                            })
+                        && method.symbol.signature.results.len() == required.signature.results.len()
+                        && method
+                            .symbol
+                            .signature
+                            .results
+                            .iter()
+                            .zip(&required.signature.results)
+                            .all(|(actual, expected)| actual.is_identical_to(expected))
                 },
             )
         })
@@ -691,9 +708,9 @@ pub(super) fn interface_method_signature(
 
 fn interface_contains(actual: &[InterfaceMethod], required: &[InterfaceMethod]) -> bool {
     required.iter().all(|required| {
-        actual
-            .iter()
-            .any(|actual| actual.name == required.name && actual.signature == required.signature)
+        actual.iter().any(|actual| {
+            actual.name == required.name && actual.signature.is_identical_to(&required.signature)
+        })
     })
 }
 
@@ -702,7 +719,10 @@ fn supports_dynamic_interface_type(ty: &Ty) -> bool {
 }
 
 fn interface_method_set_contains(source: &[InterfaceMethod], target: &[InterfaceMethod]) -> bool {
-    target
-        .iter()
-        .all(|required| source.iter().any(|available| available == required))
+    target.iter().all(|required| {
+        source.iter().any(|available| {
+            available.name == required.name
+                && available.signature.is_identical_to(&required.signature)
+        })
+    })
 }

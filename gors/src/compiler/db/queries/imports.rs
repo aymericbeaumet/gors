@@ -23,7 +23,7 @@ use crate::compiler::semantic::{
     ConstantSymbol, FunctionSymbol, FunctionSymbols, GenericFunctionSymbol, GenericTypeSymbol,
     MethodSymbol, VariableSymbol,
 };
-use crate::compiler::syntax::{FieldListSyntax, function_is_generic};
+use crate::compiler::syntax::function_is_generic;
 use crate::compiler::types::{Signature, Ty};
 
 pub(super) fn function_dependency<'db>(
@@ -62,7 +62,9 @@ pub(super) fn function_symbols(
         methods: BTreeMap::new(),
         generic_functions: BTreeMap::new(),
         generic_methods: BTreeMap::new(),
-        generic_types: collect_generic_type_symbols(db, input),
+        generic_types: super::type_aliases::generic::collect_generic_type_symbols(db, input)
+            .as_ref()
+            .clone(),
         constants: BTreeMap::new(),
         qualified_constants: BTreeMap::new(),
         variables: BTreeMap::new(),
@@ -214,7 +216,7 @@ fn collect_receiver_name_definitions(
     name: &str,
     types: &BTreeMap<String, Ty>,
     symbols: &FunctionSymbols,
-    definitions: &mut BTreeSet<DefId>,
+    definitions: &mut BTreeSet<QualifiedDefId>,
 ) {
     if let Some(ty) = types.get(name) {
         collect_receiver_type_definitions(ty, definitions);
@@ -242,8 +244,8 @@ fn collect_generic_receiver_definitions(
     generic: &GenericTypeSymbol,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     types: &BTreeMap<String, Ty>,
-    definitions: &mut BTreeSet<DefId>,
-    visiting: &mut BTreeSet<DefId>,
+    definitions: &mut BTreeSet<QualifiedDefId>,
+    visiting: &mut BTreeSet<QualifiedDefId>,
 ) {
     if generic.alias {
         if !visiting.insert(generic.id) {
@@ -273,8 +275,8 @@ fn collect_generic_underlying_promoted_definitions(
     generic: &GenericTypeSymbol,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     types: &BTreeMap<String, Ty>,
-    definitions: &mut BTreeSet<DefId>,
-    visiting: &mut BTreeSet<DefId>,
+    definitions: &mut BTreeSet<QualifiedDefId>,
+    visiting: &mut BTreeSet<QualifiedDefId>,
 ) {
     if !visiting.insert(generic.id) {
         return;
@@ -293,8 +295,8 @@ fn collect_receiver_expression_definitions(
     expression: &crate::compiler::syntax::ExprSyntax,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     types: &BTreeMap<String, Ty>,
-    definitions: &mut BTreeSet<DefId>,
-    visiting: &mut BTreeSet<DefId>,
+    definitions: &mut BTreeSet<QualifiedDefId>,
+    visiting: &mut BTreeSet<QualifiedDefId>,
 ) {
     use crate::compiler::syntax::ExprSyntaxKind;
 
@@ -355,8 +357,8 @@ fn collect_underlying_promoted_expression_definitions(
     expression: &crate::compiler::syntax::ExprSyntax,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     types: &BTreeMap<String, Ty>,
-    definitions: &mut BTreeSet<DefId>,
-    visiting: &mut BTreeSet<DefId>,
+    definitions: &mut BTreeSet<QualifiedDefId>,
+    visiting: &mut BTreeSet<QualifiedDefId>,
 ) {
     use crate::compiler::syntax::ExprSyntaxKind;
 
@@ -407,18 +409,18 @@ fn collect_underlying_promoted_expression_definitions(
     }
 }
 
-fn collect_receiver_type_definitions(ty: &Ty, definitions: &mut BTreeSet<DefId>) {
+fn collect_receiver_type_definitions(ty: &Ty, definitions: &mut BTreeSet<QualifiedDefId>) {
     match ty {
         Ty::Named {
-            definition,
+            identity,
             underlying,
         } => {
-            if definitions.insert(*definition) {
+            if definitions.insert(identity.definition()) {
                 collect_underlying_promoted_type_definitions(underlying, definitions);
             }
         }
-        Ty::NamedRef { definition } => {
-            definitions.insert(*definition);
+        Ty::NamedRef { identity } => {
+            definitions.insert(identity.definition());
         }
         Ty::LocalNamed { underlying, .. } => {
             collect_underlying_promoted_type_definitions(underlying, definitions);
@@ -449,7 +451,10 @@ fn collect_receiver_type_definitions(ty: &Ty, definitions: &mut BTreeSet<DefId>)
     }
 }
 
-fn collect_underlying_promoted_type_definitions(ty: &Ty, definitions: &mut BTreeSet<DefId>) {
+fn collect_underlying_promoted_type_definitions(
+    ty: &Ty,
+    definitions: &mut BTreeSet<QualifiedDefId>,
+) {
     match ty {
         Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } => {
             collect_underlying_promoted_type_definitions(underlying, definitions);
@@ -484,7 +489,7 @@ fn collect_constraint_expression_method_names(
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     types: &BTreeMap<String, Ty>,
     names: &mut BTreeSet<Arc<str>>,
-    visiting: &mut BTreeSet<DefId>,
+    visiting: &mut BTreeSet<QualifiedDefId>,
 ) {
     use crate::compiler::syntax::ExprSyntaxKind;
 
@@ -558,49 +563,6 @@ fn collect_constraint_expression_method_names(
         }
         _ => {}
     }
-}
-
-fn collect_generic_type_symbols(
-    db: &dyn Db,
-    input: PackageInput,
-) -> BTreeMap<String, GenericTypeSymbol> {
-    let mut result = BTreeMap::new();
-    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
-    for source in sources {
-        for alias in file_projection(db, source).type_aliases(db) {
-            let syntax = alias.syntax(db);
-            let Some(type_parameters) = &syntax.type_parameters else {
-                continue;
-            };
-            result.insert(
-                alias.name(db).to_string(),
-                GenericTypeSymbol {
-                    id: alias.id(db),
-                    type_parameters: Arc::new(type_parameters.clone()),
-                    underlying: syntax.target.clone(),
-                    alias: true,
-                },
-            );
-        }
-        for definition in file_projection(db, source).type_definitions(db) {
-            let syntax = definition.syntax(db);
-            result.insert(
-                definition.name(db).to_string(),
-                GenericTypeSymbol {
-                    id: definition.id(db),
-                    type_parameters: Arc::new(syntax.type_parameters.clone().unwrap_or_else(
-                        || FieldListSyntax {
-                            fields: Arc::from([]),
-                        },
-                    )),
-                    underlying: syntax.underlying.clone(),
-                    alias: false,
-                },
-            );
-        }
-    }
-    result
 }
 
 fn collect_interface_method_names(ty: &Ty, names: &mut BTreeSet<Arc<str>>) {
@@ -681,7 +643,7 @@ fn add_method_symbols_for_receivers(
     db: &dyn Db,
     input: PackageInput,
     names: &BTreeSet<Arc<str>>,
-    receivers: &BTreeSet<DefId>,
+    receivers: &BTreeSet<QualifiedDefId>,
     caller: crate::compiler::ids::DefId,
     symbols: &mut FunctionSymbols,
 ) -> Result<(), Arc<StageFailure>> {
@@ -692,7 +654,7 @@ fn add_method_symbols_filtered(
     db: &dyn Db,
     input: PackageInput,
     names: &BTreeSet<Arc<str>>,
-    receivers: Option<&BTreeSet<DefId>>,
+    receivers: Option<&BTreeSet<QualifiedDefId>>,
     caller: crate::compiler::ids::DefId,
     symbols: &mut FunctionSymbols,
 ) -> Result<(), Arc<StageFailure>> {
@@ -754,7 +716,7 @@ fn add_method_symbols_filtered(
                 );
                 continue;
             }
-            let Some(Ty::Named { definition, .. }) = types.get(receiver.as_ref()) else {
+            let Some(Ty::Named { identity, .. }) = types.get(receiver.as_ref()) else {
                 return Err(semantic_failure(
                     caller,
                     Diagnostic::semantic(
@@ -763,11 +725,11 @@ fn add_method_symbols_filtered(
                     ),
                 ));
             };
-            if receivers.is_some_and(|receivers| !receivers.contains(definition)) {
+            if receivers.is_some_and(|receivers| !receivers.contains(&identity.definition())) {
                 continue;
             }
             let signature = typed_signature_product(db, input, method)?;
-            let key = (*definition, name.to_string());
+            let key = (identity.definition(), name.to_string());
             let symbol = MethodSymbol {
                 id: QualifiedDefId::new(input.package(db), method.id(db)),
                 signature: signature.signature().clone(),

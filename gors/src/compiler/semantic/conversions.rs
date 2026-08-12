@@ -182,7 +182,10 @@ impl FunctionLowerer {
         } else if is_assignable(&argument.ty, &target) {
             coerce_expr(&mut argument, &target, source)?;
             argument
-        } else if argument.ty.underlying() == target.underlying()
+        } else if argument
+            .ty
+            .underlying()
+            .is_identical_to(target.underlying())
             || is_integer_conversion(&argument.ty, &target)
             || is_numeric_conversion(&argument.ty, &target)
         {

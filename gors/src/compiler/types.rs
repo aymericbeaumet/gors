@@ -5,12 +5,14 @@
 
 mod exact_float;
 mod exact_number;
+mod named;
 
 use num_bigint::BigInt;
 
-use super::ids::{DefId, LocalTypeId};
+use super::ids::LocalTypeId;
 
 pub use exact_number::ExactNumber;
+pub use named::NamedTypeId;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Ty {
@@ -21,13 +23,13 @@ pub enum Ty {
     Float(FloatTy),
     Complex(ComplexTy),
     Named {
-        definition: DefId,
+        identity: NamedTypeId,
         underlying: Box<Ty>,
     },
     /// A finite reference back to a package named type from within its own
     /// recursively guarded underlying representation.
     NamedRef {
-        definition: DefId,
+        identity: NamedTypeId,
     },
     LocalNamed {
         identity: LocalTypeId,
@@ -216,20 +218,28 @@ impl Ty {
             Self::Float(FloatTy::Float32) => "builtin:float32".to_owned(),
             Self::Float(FloatTy::Float64) => "builtin:float64".to_owned(),
             Self::String => "builtin:string".to_owned(),
-            Self::Named { definition, .. } | Self::NamedRef { definition } => {
-                format!("named:{definition}")
+            Self::Named { identity, .. } | Self::NamedRef { identity } => {
+                return identity.dynamic_identity();
             }
             Self::LocalNamed { identity, .. } => format!("local-named:{identity}"),
             Self::Pointer(element) => match element.as_ref() {
                 Self::Int(IntTy::Int) => "pointer:builtin:int".to_owned(),
-                Self::Named { definition, .. } => format!("pointer:named:{definition}"),
+                Self::Named { identity, .. } => {
+                    return Some(container_dynamic_identity(
+                        b"pointer",
+                        &identity.dynamic_identity()?,
+                    ));
+                }
                 Self::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
                 _ => return None,
             },
             Self::Slice(element) => match element.as_ref() {
                 Self::String => "slice:builtin:string".to_owned(),
-                Self::Named { definition, .. } | Self::NamedRef { definition } => {
-                    format!("slice:named:{definition}")
+                Self::Named { identity, .. } | Self::NamedRef { identity } => {
+                    return Some(container_dynamic_identity(
+                        b"slice",
+                        &identity.dynamic_identity()?,
+                    ));
                 }
                 Self::LocalNamed { identity, .. } => format!("slice:local-named:{identity}"),
                 _ => return None,
@@ -497,6 +507,19 @@ impl Ty {
             | Self::Untyped(_) => None,
         }
     }
+}
+
+fn container_dynamic_identity(kind: &[u8], element: &[u8]) -> Vec<u8> {
+    let mut identity = Vec::with_capacity(kind.len() + element.len() + 16);
+    // Rust supports at most 64-bit address spaces, so these widenings are
+    // lossless on every target supported by the compiler.
+    let kind_len = kind.len() as u64;
+    let element_len = element.len() as u64;
+    identity.extend_from_slice(&kind_len.to_be_bytes());
+    identity.extend_from_slice(kind);
+    identity.extend_from_slice(&element_len.to_be_bytes());
+    identity.extend_from_slice(element);
+    identity
 }
 
 impl ConstValue {

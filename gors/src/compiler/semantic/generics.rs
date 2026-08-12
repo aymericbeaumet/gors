@@ -2,21 +2,24 @@
 
 mod calls;
 mod constraints;
+mod instantiation;
 mod methods;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::expressions::coerce_expr;
-use super::{FunctionLowerer, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol, lower_type};
+use super::{
+    ConstantSymbol, FunctionLowerer, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol,
+};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{ClosureId, NodeId};
+use crate::compiler::ids::{ClosureId, NodeId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
     BlockSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FunctionHeaderSyntax, IdentSyntax,
     SyntaxSource,
 };
-use crate::compiler::types::{ChannelDir, Signature, StructField, Ty, UntypedTy};
+use crate::compiler::types::{ChannelDir, Ty, UntypedTy};
 use crate::token::Token;
 
 type LoweredGenericBody = (
@@ -25,15 +28,23 @@ type LoweredGenericBody = (
     hir::Block,
 );
 use constraints::{
-    infer_constraint_arguments, type_parameter_names, type_parameter_names_in_order,
-    validate_constraints, validate_declared_constraints,
+    infer_constraint_arguments, type_parameter_names_in_order, validate_constraints,
+    validate_declared_constraints,
+};
+use instantiation::{
+    instantiate_generic_receiver, instantiate_signature, instantiated_receiver_substitutions,
+    named_receiver_definition, named_receiver_identity,
+};
+pub(super) use instantiation::{
+    lower_type_with_generic_constant_lookup, lower_type_with_generics, type_contains_instantiation,
 };
 use methods::instantiate_generic_method_for_receiver;
 
 #[derive(Clone, Copy)]
 pub(super) struct MethodEnvironment<'a> {
-    concrete: &'a BTreeMap<(crate::compiler::ids::DefId, String), MethodSymbol>,
-    generic: &'a BTreeMap<(crate::compiler::ids::DefId, String), GenericFunctionSymbol>,
+    concrete: &'a BTreeMap<(QualifiedDefId, String), MethodSymbol>,
+    generic: &'a BTreeMap<(QualifiedDefId, String), GenericFunctionSymbol>,
+    complete: bool,
 }
 
 impl FunctionLowerer {
@@ -43,131 +54,36 @@ impl FunctionLowerer {
         MethodEnvironment {
             concrete: &self.methods,
             generic: &self.generic_methods,
+            complete: true,
         }
     }
 }
 
-pub(super) fn lower_type_with_generics(
+pub(in crate::compiler) fn lower_type_with_generic_symbols(
     expression: &ExprSyntax,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    methods: MethodEnvironment<'_>,
+    constants: &BTreeMap<String, ConstantSymbol>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
-    if let ExprSyntaxKind::Paren(inner) = &expression.kind {
-        return lower_type_with_generics(inner, aliases, generic_types, methods, source);
-    }
-    if let ExprSyntaxKind::StructType { fields } = &expression.kind {
-        let mut lowered = Vec::new();
-        for field in &*fields.fields {
-            if field.variadic {
-                return Err(Diagnostic::semantic(
-                    "struct fields cannot be variadic",
-                    source,
-                ));
-            }
-            let syntax = field
-                .ty
-                .as_ref()
-                .ok_or_else(|| Diagnostic::backend("struct field has no type"))?;
-            let ty = lower_type_with_generics(syntax, aliases, generic_types, methods, source)?;
-            let tag = field.tag.as_ref().map(ToString::to_string);
-            if let Some(names) = &field.names {
-                lowered.extend(names.iter().map(|name| StructField {
-                    name: name.name.to_string(),
-                    ty: ty.clone(),
-                    embedded: false,
-                    tag: tag.clone(),
-                }));
-            } else {
-                lowered.push(StructField {
-                    name: generic_embedded_field_name(syntax).ok_or_else(|| {
-                        Diagnostic::semantic("invalid embedded struct field type", source)
-                    })?,
-                    ty,
-                    embedded: true,
-                    tag,
-                });
-            }
-        }
-        return Ok(Ty::Struct(lowered));
-    }
-    let (base, arguments) = match &expression.kind {
-        ExprSyntaxKind::Index { base, index } => {
-            (base.as_ref(), std::slice::from_ref(index.as_ref()))
-        }
-        ExprSyntaxKind::IndexList { base, indices } => (base.as_ref(), indices.as_ref()),
-        _ => return lower_type(expression, aliases, source),
-    };
-    let ExprSyntaxKind::Ident(base) = &base.kind else {
-        return Err(Diagnostic::unsupported(
-            "parameterized type base must be a named type",
-            source,
-        ));
-    };
-    let generic = generic_types.get(base.name.as_ref()).ok_or_else(|| {
-        Diagnostic::semantic(format!("{} is not a generic type", base.name), source)
-    })?;
-    let parameters = type_parameter_names_in_order(&generic.type_parameters, source)?;
-    if parameters.len() != arguments.len() {
-        return Err(Diagnostic::semantic(
-            format!(
-                "generic type {} requires {} type arguments; got {}",
-                base.name,
-                parameters.len(),
-                arguments.len()
-            ),
-            source,
-        ));
-    }
-    let substitutions = parameters
-        .into_iter()
-        .zip(arguments)
-        .map(|(parameter, argument)| {
-            lower_type_with_generics(argument, aliases, generic_types, methods, source)
-                .map(|argument| (parameter, argument))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    validate_constraints(
-        &generic.type_parameters,
-        &substitutions,
+    let concrete = BTreeMap::new();
+    let generic = BTreeMap::new();
+    lower_type_with_generic_constant_lookup(
+        expression,
         aliases,
         generic_types,
-        methods,
+        MethodEnvironment {
+            concrete: &concrete,
+            generic: &generic,
+            complete: false,
+        },
+        &|name| {
+            constants
+                .get(name)
+                .map(|constant| (constant.ty.clone(), constant.value.clone()))
+        },
         source,
-    )?;
-    let mut instantiated_aliases = aliases.clone();
-    instantiated_aliases.extend(substitutions);
-    let underlying = lower_type_with_generics(
-        &generic.underlying,
-        &instantiated_aliases,
-        generic_types,
-        methods,
-        source,
-    )?;
-    if generic.alias {
-        Ok(underlying)
-    } else {
-        Ok(Ty::Named {
-            definition: generic.id,
-            underlying: Box::new(underlying.underlying().clone()),
-        })
-    }
-}
-
-fn generic_embedded_field_name(expression: &ExprSyntax) -> Option<String> {
-    match &expression.kind {
-        ExprSyntaxKind::Ident(ident) => Some(ident.name.to_string()),
-        ExprSyntaxKind::Paren(inner)
-        | ExprSyntaxKind::Unary {
-            token: Token::MUL,
-            expression: inner,
-        }
-        | ExprSyntaxKind::Index { base: inner, .. }
-        | ExprSyntaxKind::IndexList { base: inner, .. } => generic_embedded_field_name(inner),
-        ExprSyntaxKind::Selector { member, .. } => Some(member.name.to_string()),
-        _ => None,
-    }
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -403,7 +319,7 @@ fn infer_type_expression(
         ExprSyntaxKind::Ident(ident) if parameter_names.contains(ident.name.as_ref()) => {
             let actual = actual.default_typed();
             if let Some(previous) = substitutions.get(ident.name.as_ref())
-                && previous != &actual
+                && !previous.is_identical_to(&actual)
             {
                 let Some(preferred) = prefer_defined_type(previous, &actual) else {
                     return Err(Diagnostic::semantic(
@@ -484,34 +400,28 @@ fn infer_type_expression(
                 source,
             )
         }
-        ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
-            let ExprSyntaxKind::Ident(base) = &base.kind else {
-                return Err(type_inference_mismatch(formal, actual, source));
-            };
-            let generic = generic_types.get(base.name.as_ref()).ok_or_else(|| {
-                Diagnostic::semantic(format!("{} is not a generic type", base.name), source)
-            })?;
-            let Ty::Named {
-                definition,
-                underlying,
-            } = actual
-            else {
-                return Err(type_inference_mismatch(formal, actual, source));
-            };
-            if *definition != generic.id {
-                return Err(type_inference_mismatch(formal, actual, source));
-            }
-            infer_type_expression(
-                &generic.underlying,
-                underlying,
-                parameter_names,
-                substitutions,
-                aliases,
-                generic_types,
-                methods,
-                source,
-            )
-        }
+        ExprSyntaxKind::Index { base, index } => infer_instantiated_type(
+            base,
+            std::slice::from_ref(index.as_ref()),
+            actual,
+            parameter_names,
+            substitutions,
+            aliases,
+            generic_types,
+            methods,
+            source,
+        ),
+        ExprSyntaxKind::IndexList { base, indices } => infer_instantiated_type(
+            base,
+            indices,
+            actual,
+            parameter_names,
+            substitutions,
+            aliases,
+            generic_types,
+            methods,
+            source,
+        ),
         ExprSyntaxKind::StructType { fields } => {
             let Ty::Struct(actual_fields) = actual.underlying() else {
                 return Err(type_inference_mismatch(formal, actual, source));
@@ -595,13 +505,55 @@ fn infer_type_expression(
                 methods,
                 source,
             )?;
-            if expected == *actual {
+            if expected.is_identical_to(actual) {
                 Ok(())
             } else {
                 Err(type_inference_mismatch(formal, actual, source))
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_instantiated_type(
+    base: &ExprSyntax,
+    formal_arguments: &[ExprSyntax],
+    actual: &Ty,
+    parameter_names: &BTreeSet<String>,
+    substitutions: &mut BTreeMap<String, Ty>,
+    aliases: &BTreeMap<String, Ty>,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
+    source: SourceRef,
+) -> Result<(), Diagnostic> {
+    let ExprSyntaxKind::Ident(base_ident) = &base.kind else {
+        return Err(type_inference_mismatch(base, actual, source));
+    };
+    let generic = generic_types.get(base_ident.name.as_ref()).ok_or_else(|| {
+        Diagnostic::semantic(format!("{} is not a generic type", base_ident.name), source)
+    })?;
+    if generic.alias {
+        return Err(type_inference_mismatch(base, actual, source));
+    }
+    let Ty::Named { identity, .. } = actual else {
+        return Err(type_inference_mismatch(base, actual, source));
+    };
+    if identity.definition() != generic.id || identity.arguments().len() != formal_arguments.len() {
+        return Err(type_inference_mismatch(base, actual, source));
+    }
+    for (formal, actual) in formal_arguments.iter().zip(identity.arguments()) {
+        infer_type_expression(
+            formal,
+            actual,
+            parameter_names,
+            substitutions,
+            aliases,
+            generic_types,
+            methods,
+            source,
+        )?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -665,7 +617,7 @@ fn infer_signature_fields(
 }
 
 fn prefer_defined_type(previous: &Ty, actual: &Ty) -> Option<Ty> {
-    if previous.underlying() != actual.underlying() {
+    if !previous.underlying().is_identical_to(actual.underlying()) {
         return None;
     }
     match (previous, actual) {
@@ -685,7 +637,7 @@ fn type_inference_mismatch(_formal: &ExprSyntax, actual: &Ty, source: SourceRef)
 fn infer_receiver_parameter_aliases(
     receiver: &ExprSyntax,
     base_parameters: &FieldListSyntax,
-    substitutions: &BTreeMap<String, Ty>,
+    positional_arguments: &[Ty],
     source: SourceRef,
 ) -> Result<BTreeMap<String, Ty>, Diagnostic> {
     let receiver = match &receiver.kind {
@@ -717,7 +669,16 @@ fn infer_receiver_parameter_aliases(
         ));
     }
     let mut aliases = BTreeMap::new();
-    for (parameter, argument) in parameters.into_iter().zip(arguments) {
+    if positional_arguments.len() != parameters.len() {
+        return Err(Diagnostic::backend(
+            "generic receiver identity has the wrong positional arity",
+        ));
+    }
+    for ((_, argument), actual) in parameters
+        .into_iter()
+        .zip(arguments)
+        .zip(positional_arguments)
+    {
         let ExprSyntaxKind::Ident(alias) = &argument.kind else {
             return Err(Diagnostic::semantic(
                 "generic method receiver arguments must be identifiers",
@@ -727,12 +688,10 @@ fn infer_receiver_parameter_aliases(
         if alias.name.as_ref() == "_" {
             continue;
         }
-        let actual = substitutions.get(&parameter).cloned().ok_or_else(|| {
-            Diagnostic::backend(format!(
-                "generic receiver parameter {parameter} was not inferred"
-            ))
-        })?;
-        if aliases.insert(alias.name.to_string(), actual).is_some() {
+        if aliases
+            .insert(alias.name.to_string(), actual.clone())
+            .is_some()
+        {
             return Err(Diagnostic::semantic(
                 format!("receiver type parameter {} is repeated", alias.name),
                 source,
@@ -740,147 +699,6 @@ fn infer_receiver_parameter_aliases(
         }
     }
     Ok(aliases)
-}
-
-fn instantiate_generic_receiver(
-    generic: &GenericTypeSymbol,
-    substitutions: &BTreeMap<String, Ty>,
-    pointer: bool,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    methods: MethodEnvironment<'_>,
-    source: SourceRef,
-) -> Result<Ty, Diagnostic> {
-    if generic.alias {
-        return Err(Diagnostic::semantic(
-            "a method receiver base must be a defined type",
-            source,
-        ));
-    }
-    let mut environment = aliases.clone();
-    environment.extend(substitutions.clone());
-    let underlying = lower_type_with_generics(
-        &generic.underlying,
-        &environment,
-        generic_types,
-        methods,
-        source,
-    )?;
-    let receiver = Ty::Named {
-        definition: generic.id,
-        underlying: Box::new(underlying.underlying().clone()),
-    };
-    Ok(if pointer {
-        Ty::Pointer(Box::new(receiver))
-    } else {
-        receiver
-    })
-}
-
-fn instantiate_signature(
-    header: &FunctionHeaderSyntax,
-    substitutions: &BTreeMap<String, Ty>,
-    receiver_override: Option<Ty>,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    methods: MethodEnvironment<'_>,
-    source: SourceRef,
-) -> Result<Signature, Diagnostic> {
-    let mut aliases = aliases.clone();
-    aliases.extend(substitutions.clone());
-    let mut params = Vec::new();
-    if let Some(receiver) = &header.receiver {
-        if let Some(receiver) = receiver_override {
-            params.push(receiver);
-        } else {
-            let (receiver, variadic) =
-                parameter_types_with_generics(receiver, &aliases, generic_types, methods, source)?;
-            if variadic || receiver.len() != 1 {
-                return Err(Diagnostic::semantic(
-                    "a method must declare exactly one non-variadic receiver",
-                    source,
-                ));
-            }
-            params.extend(receiver);
-        }
-    } else if receiver_override.is_some() {
-        return Err(Diagnostic::backend(
-            "generic function received a method receiver override",
-        ));
-    }
-    let (ordinary, variadic) =
-        parameter_types_with_generics(&header.params, &aliases, generic_types, methods, source)?;
-    params.extend(ordinary);
-    let results = header
-        .results
-        .as_ref()
-        .map(|results| field_types_with_generics(results, &aliases, generic_types, methods, source))
-        .transpose()?
-        .unwrap_or_default();
-    Ok(Signature {
-        params,
-        results,
-        variadic,
-    })
-}
-
-fn field_types_with_generics(
-    fields: &FieldListSyntax,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    methods: MethodEnvironment<'_>,
-    source: SourceRef,
-) -> Result<Vec<Ty>, Diagnostic> {
-    let mut result = Vec::new();
-    for field in &*fields.fields {
-        if field.variadic {
-            return Err(Diagnostic::semantic(
-                "result parameters cannot be variadic",
-                source,
-            ));
-        }
-        let expression = field
-            .ty
-            .as_ref()
-            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let ty = lower_type_with_generics(expression, aliases, generic_types, methods, source)?;
-        result.extend(std::iter::repeat_n(
-            ty,
-            field.names.as_ref().map_or(1, |names| names.len()),
-        ));
-    }
-    Ok(result)
-}
-
-fn parameter_types_with_generics(
-    fields: &FieldListSyntax,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    methods: MethodEnvironment<'_>,
-    source: SourceRef,
-) -> Result<(Vec<Ty>, bool), Diagnostic> {
-    let mut result = Vec::new();
-    let mut variadic = false;
-    for (index, field) in fields.fields.iter().enumerate() {
-        let expression = field
-            .ty
-            .as_ref()
-            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let mut ty = lower_type_with_generics(expression, aliases, generic_types, methods, source)?;
-        let count = field.names.as_ref().map_or(1, |names| names.len());
-        if field.variadic {
-            if variadic || index + 1 != fields.fields.len() || count != 1 {
-                return Err(Diagnostic::semantic(
-                    "a variadic parameter must be the final single parameter",
-                    source,
-                ));
-            }
-            variadic = true;
-            ty = Ty::Slice(Box::new(ty));
-        }
-        result.extend(std::iter::repeat_n(ty, count));
-    }
-    Ok((result, variadic))
 }
 
 fn parameter_patterns_for_call(
@@ -951,15 +769,4 @@ fn single_receiver_type(
         .ty
         .as_ref()
         .ok_or_else(|| Diagnostic::backend("generic method receiver omitted its type"))
-}
-
-fn named_receiver_definition(ty: &Ty) -> Option<crate::compiler::ids::DefId> {
-    match ty {
-        Ty::Named { definition, .. } => Some(*definition),
-        Ty::Pointer(element) => match element.as_ref() {
-            Ty::Named { definition, .. } => Some(*definition),
-            _ => None,
-        },
-        _ => None,
-    }
 }

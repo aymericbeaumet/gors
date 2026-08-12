@@ -9,12 +9,12 @@ use crate::compiler::ids::{
 };
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{
-    ChannelDir, ComplexTy, ConstValue, FloatTy, IntTy, InterfaceMethod, Signature, StructField, Ty,
-    UintTy, UntypedTy,
+    ChannelDir, ComplexTy, ConstValue, FloatTy, IntTy, InterfaceMethod, NamedTypeId, Signature,
+    StructField, Ty, UintTy, UntypedTy,
 };
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
-const SCHEMA_VERSION: u32 = 10;
+const SCHEMA_VERSION: u32 = 11;
 
 /// An encoder for one root product or one length-delimited nested field.
 pub(super) struct Encoder {
@@ -168,6 +168,15 @@ pub(super) fn signature(encoder: &mut Encoder, value: &Signature) {
     encoder.field(b"variadic", |encoder| encoder.bool(value.variadic));
 }
 
+fn named_type_id(encoder: &mut Encoder, value: &NamedTypeId) {
+    encoder.field(b"definition", |encoder| {
+        qualified_def_id(encoder, value.definition());
+    });
+    encoder.field(b"arguments", |encoder| {
+        encoder.sequence(value.arguments(), ty);
+    });
+}
+
 pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
     match value {
         Ty::Unit => encoder.variant(b"unit", |_| {}),
@@ -177,14 +186,14 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
         Ty::Float(value) => encoder.variant(b"float", |encoder| float_ty(encoder, *value)),
         Ty::Complex(value) => encoder.variant(b"complex", |encoder| complex_ty(encoder, *value)),
         Ty::Named {
-            definition,
+            identity,
             underlying,
         } => encoder.variant(b"named", |encoder| {
-            encoder.field(b"definition", |encoder| def_id(encoder, *definition));
+            encoder.field(b"identity", |encoder| named_type_id(encoder, identity));
             encoder.field(b"underlying", |encoder| ty(encoder, underlying));
         }),
-        Ty::NamedRef { definition } => encoder.variant(b"named-ref", |encoder| {
-            def_id(encoder, *definition);
+        Ty::NamedRef { identity } => encoder.variant(b"named-ref", |encoder| {
+            named_type_id(encoder, identity);
         }),
         Ty::LocalNamed {
             identity,

@@ -32,6 +32,7 @@ use support::{
     collect_variable_references, function_definition_key, package_references_in_body,
     semantic_build_dependency, semantic_failure,
 };
+pub(super) use type_aliases::generic::collect_generic_type_symbols;
 pub(super) use type_aliases::{
     TypeAliasProjection, TypeDefinitionProjection, package_type_aliases_product,
     package_type_named_product, type_alias_source_table_product,
@@ -585,13 +586,16 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let type_aliases = projected_type_aliases
         .into_iter()
         .map(|(id, key, name, syntax, layout)| {
-            TypeAliasProjection::new(db, id, key, name, syntax, layout)
+            let ordinary = syntax.type_parameters.is_none();
+            TypeAliasProjection::new(db, id, key, name, syntax, layout, ordinary)
         })
         .collect();
     let type_definitions = projected_type_definitions
         .into_iter()
         .map(|(id, key, name, syntax, layout)| {
-            TypeDefinitionProjection::new(db, id, key, name, syntax, layout)
+            let ordinary = syntax.type_parameters.is_none()
+                && !type_aliases::is_constraint_type(&syntax.underlying);
+            TypeDefinitionProjection::new(db, id, key, name, syntax, layout, ordinary)
         })
         .collect();
     FileFacts::new(

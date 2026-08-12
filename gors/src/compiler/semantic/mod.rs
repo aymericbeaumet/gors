@@ -49,6 +49,7 @@ pub(super) use constants::{
 };
 use expressions::*;
 use function::FunctionLowerer;
+pub(in crate::compiler) use generics::lower_type_with_generic_symbols;
 use type_lowering::{
     field_types, field_types_with_constant_lookup, parameter_types,
     parameter_types_with_constant_lookup,
@@ -90,9 +91,9 @@ pub(super) struct GenericFunctionSymbol {
     pub(super) pointer_receiver: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct GenericTypeSymbol {
-    pub(super) id: DefId,
+    pub(super) id: QualifiedDefId,
     pub(super) type_parameters: Arc<FieldListSyntax>,
     pub(super) underlying: ExprSyntax,
     pub(super) alias: bool,
@@ -115,9 +116,9 @@ pub(super) struct VariableSymbol {
 pub(super) struct FunctionSymbols {
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
-    pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
+    pub(super) methods: BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     pub(super) generic_functions: BTreeMap<String, GenericFunctionSymbol>,
-    pub(super) generic_methods: BTreeMap<(DefId, String), GenericFunctionSymbol>,
+    pub(super) generic_methods: BTreeMap<(QualifiedDefId, String), GenericFunctionSymbol>,
     pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,

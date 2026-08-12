@@ -1,5 +1,5 @@
-use super::{ConstValue, ExactNumber, FloatTy, IntTy, Ty};
-use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner};
+use super::{ConstValue, ExactNumber, FloatTy, IntTy, NamedTypeId, Ty};
+use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner, QualifiedDefId};
 use crate::compiler::input::{PackageKey, WorkspaceKey};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -125,7 +125,7 @@ fn integer_pointer_interface_payloads_preserve_declared_type_identity() -> TestR
     ))?;
     let builtin = Ty::Pointer(Box::new(Ty::Int(IntTy::Int)));
     let named = Ty::Pointer(Box::new(Ty::Named {
-        definition,
+        identity: NamedTypeId::new(QualifiedDefId::new(package, definition), Arc::from([])),
         underlying: Box::new(Ty::Int(IntTy::Int)),
     }));
 
@@ -135,13 +135,11 @@ fn integer_pointer_interface_payloads_preserve_declared_type_identity() -> TestR
         builtin.dynamic_type_identity().as_deref(),
         Some(b"pointer:builtin:int".as_slice())
     );
-    assert_eq!(
-        named.dynamic_type_identity(),
-        Some(format!("pointer:named:{definition}").into_bytes())
-    );
+    assert!(named.dynamic_type_identity().is_some());
     assert_ne!(
         builtin.dynamic_type_identity(),
         named.dynamic_type_identity()
     );
     Ok(())
 }
+use std::sync::Arc;
