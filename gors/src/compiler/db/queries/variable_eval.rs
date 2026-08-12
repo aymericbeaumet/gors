@@ -26,6 +26,12 @@ pub(in crate::compiler::db) fn typed_variable_product(
     check_semantic_barrier(db, definition, variable.semantic_barrier(db))?;
     semantic_build_dependency(db, definition)?;
 
+    // Only names the initializer actually reads as values can make this
+    // variable depend on another one. The dependency set is wider because it
+    // also drives constant resolution.
+    let mut value_names = std::collections::BTreeSet::new();
+    super::support::collect_variable_value_names(&variable.syntax(db), &mut value_names);
+
     let mut constants = BTreeMap::new();
     for dependency_name in variable.dependencies(db).iter() {
         db.unwind_if_revision_cancelled();
@@ -41,7 +47,9 @@ pub(in crate::compiler::db) fn typed_variable_product(
                     value: typed.value.clone(),
                 },
             );
-        } else if package_variable_named_product(db, input, Arc::clone(dependency_name)).is_some() {
+        } else if value_names.contains(dependency_name.as_ref())
+            && package_variable_named_product(db, input, Arc::clone(dependency_name)).is_some()
+        {
             return Err(semantic_failure(
                 definition,
                 Diagnostic::unsupported(
