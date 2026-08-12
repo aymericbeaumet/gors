@@ -637,6 +637,8 @@ impl Function {
                                 | hir::Builtin::InterfaceUnboxGoString
                                 | hir::Builtin::InterfaceBoxGoSliceGoString
                                 | hir::Builtin::InterfaceUnboxGoSliceGoString
+                                | hir::Builtin::InterfaceBoxGoSliceI64
+                                | hir::Builtin::InterfaceUnboxGoSliceI64
                                 | hir::Builtin::InterfaceStructI64Get
                                 | hir::Builtin::InterfaceUnboxPointerI64
                                 | hir::Builtin::InterfaceUnboxPointerStructI64

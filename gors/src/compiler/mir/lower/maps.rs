@@ -101,14 +101,12 @@ impl FunctionLowerer {
         } else if is_i64_go_string_map(&ty) {
             Some(hir::Builtin::MapI64GoStringNil)
         } else if let Ty::Slice(element) = ty.underlying() {
-            if matches!(
-                element.underlying(),
-                Ty::Int(crate::compiler::types::IntTy::Int | crate::compiler::types::IntTy::Int32)
-            ) || element.snapshot_function_result().is_some()
+            if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) {
+                Some(hir::Builtin::SliceU8Nil)
+            } else if element.uses_i64_slice_carrier()
+                || element.snapshot_function_result().is_some()
             {
                 Some(hir::Builtin::SliceI64Nil)
-            } else if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) {
-                Some(hir::Builtin::SliceU8Nil)
             } else if element.underlying() == &Ty::Bool {
                 Some(hir::Builtin::SliceBoolNil)
             } else if element.underlying() == &Ty::String {

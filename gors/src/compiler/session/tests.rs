@@ -96,7 +96,6 @@ fn raw_program_at_version(
 fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
     for source in [
         "package main\nfunc main() { value := \"x\"; _ = &value }\n",
-        "package main\ntype Value struct { Items []int }\nfunc main() { value := Value{}; _ = &value }\n",
         "package main\ntype Node struct { Next *Node }\nfunc main() { value := Node{}; _ = &value }\n",
         "package main\ntype Node struct { Next *Node }\nfunc use(value *Node) {}\nfunc main() {}\n",
         "package main\nfunc main() { value := &struct { Name string }{}; _ = value }\n",

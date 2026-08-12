@@ -531,6 +531,13 @@ impl FunctionLowerer {
                     ty.clone(),
                     source,
                 ),
+            Ty::Slice(element) if element.uses_i64_slice_carrier() => self.unbox_interface_scalar(
+                hir::Builtin::InterfaceUnboxGoSliceI64,
+                interface,
+                identity,
+                ty.clone(),
+                source,
+            ),
             Ty::Slice(element) if element.uses_interface_aggregate_representation() => self
                 .unbox_interface_scalar(
                     hir::Builtin::InterfaceUnboxAggregate,
@@ -590,6 +597,9 @@ impl FunctionLowerer {
             ),
             Ty::Slice(element) if element.underlying() == &Ty::String => {
                 (hir::Builtin::InterfaceBoxGoSliceGoString, value_operand)
+            }
+            Ty::Slice(element) if element.uses_i64_slice_carrier() => {
+                (hir::Builtin::InterfaceBoxGoSliceI64, value_operand)
             }
             Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                 (hir::Builtin::InterfaceBoxAggregate, value_operand)

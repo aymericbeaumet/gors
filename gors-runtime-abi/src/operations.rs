@@ -362,6 +362,12 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxGoSliceGoString => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceGoString)
             }
+            Self::GoInterfaceBoxGoSliceI64 => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_GO_SLICE_I64, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceUnboxGoSliceI64 => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceI64)
+            }
             Self::GoPointerStructI64Nil => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoPointerStructI64)
             }

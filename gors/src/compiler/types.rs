@@ -235,6 +235,14 @@ impl Ty {
             },
             Self::Slice(element) => match element.as_ref() {
                 Self::String => "slice:builtin:string".to_owned(),
+                // Scalar integer elements share the one i64 slice carrier but
+                // keep distinct dynamic identities, exactly as Go does.
+                scalar
+                    if scalar.uses_i64_slice_carrier()
+                        && let Some(scalar) = scalar.dynamic_type_identity() =>
+                {
+                    return Some(container_dynamic_identity(b"slice", &scalar));
+                }
                 Self::Named { identity, .. } | Self::NamedRef { identity } => {
                     return Some(container_dynamic_identity(
                         b"slice",
@@ -357,6 +365,7 @@ impl Ty {
             Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
             Self::Slice(element) => {
                 element.underlying() == &Self::String
+                    || element.uses_i64_slice_carrier()
                     || element.uses_interface_aggregate_representation()
             }
             Self::Pointer(element) => {

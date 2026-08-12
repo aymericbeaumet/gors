@@ -366,4 +366,6 @@ pub(super) const ALL: &[RuntimeOp] = &[
     RuntimeOp::PrintF32,
     RuntimeOp::GoInterfaceBoxF32,
     RuntimeOp::GoInterfaceUnboxF32,
+    RuntimeOp::GoInterfaceBoxGoSliceI64,
+    RuntimeOp::GoInterfaceUnboxGoSliceI64,
 ];

@@ -364,3 +364,41 @@ fn nil_interface_method_calls_panic_instead_of_running_a_zero_receiver() {
 
     assert_eq!(run.stderr, b"speaker\nshouter\nfalse\ntrue\n");
 }
+
+#[test]
+fn integer_slices_box_and_extract_through_interfaces() {
+    // An integer slice carries its own dynamic identity, so it can be a field
+    // of an aggregate struct and can round-trip through an interface. The
+    // identity is per element kind, so an assertion to a different slice type
+    // must fail rather than alias the shared carrier.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Value struct {
+                Items []int
+                Count int
+            }
+
+            func main() {
+                value := Value{Items: []int{1, 2, 3}, Count: 7}
+                p := &value
+                println(len(p.Items), p.Items[1], p.Count)
+
+                var boxed interface{} = value.Items
+                got, ok := boxed.([]int)
+                println(ok, len(got), got[2])
+
+                _, wrongElement := boxed.([]string)
+                _, wrongWidth := boxed.([]int32)
+                println(wrongElement, wrongWidth)
+
+                var pointers interface{} = []uintptr{9}
+                back, isPointers := pointers.([]uintptr)
+                println(isPointers, back[0])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"3 2 7\ntrue 3 3\nfalse false\ntrue 9\n");
+}

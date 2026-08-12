@@ -187,6 +187,8 @@ impl RuntimeOp {
             Self::PrintF32 => 222,
             Self::GoInterfaceBoxF32 => 223,
             Self::GoInterfaceUnboxF32 => 224,
+            Self::GoInterfaceBoxGoSliceI64 => 225,
+            Self::GoInterfaceUnboxGoSliceI64 => 226,
         })
     }
 }

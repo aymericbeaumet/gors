@@ -14,6 +14,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceBoxI64
             | hir::Builtin::InterfaceBoxGoString
             | hir::Builtin::InterfaceBoxGoSliceGoString
+            | hir::Builtin::InterfaceBoxGoSliceI64
             | hir::Builtin::InterfaceBoxStructI64
             | hir::Builtin::InterfaceBoxPointerI64
             | hir::Builtin::InterfaceBoxPointerStructI64
@@ -29,6 +30,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceUnboxI64
             | hir::Builtin::InterfaceUnboxGoString
             | hir::Builtin::InterfaceUnboxGoSliceGoString
+            | hir::Builtin::InterfaceUnboxGoSliceI64
             | hir::Builtin::InterfaceStructI64Get
             | hir::Builtin::InterfaceUnboxPointerI64
             | hir::Builtin::InterfaceUnboxPointerStructI64
@@ -68,6 +70,9 @@ pub(super) fn verify_interface_call(
         }
         hir::Builtin::InterfaceBoxGoSliceGoString => {
             verify_box(arguments, destinations, is_go_string_slice)
+        }
+        hir::Builtin::InterfaceBoxGoSliceI64 => {
+            verify_box(arguments, destinations, is_i64_carrier_slice)
         }
         hir::Builtin::InterfaceBoxStructI64 => verify_box(arguments, destinations, |ty| {
             ty.underlying() == &Ty::Slice(Box::new(Ty::Int(IntTy::Int)))
@@ -137,6 +142,12 @@ pub(super) fn verify_interface_call(
             destinations,
             is_go_string_slice,
             "interface string slice extraction",
+        ),
+        hir::Builtin::InterfaceUnboxGoSliceI64 => verify_unbox(
+            arguments,
+            destinations,
+            is_i64_carrier_slice,
+            "interface integer slice extraction",
         ),
         hir::Builtin::InterfaceStructI64Get => {
             let ([interface, identity, field], [result]) = (arguments, destinations) else {
@@ -295,6 +306,10 @@ fn is_aggregate_payload(ty: &Ty) -> bool {
                 || element.uses_interface_aggregate_representation()
                 )
     )
+}
+
+fn is_i64_carrier_slice(ty: &Ty) -> bool {
+    matches!(ty.underlying(), Ty::Slice(element) if element.uses_i64_slice_carrier())
 }
 
 fn is_go_string_slice(ty: &Ty) -> bool {

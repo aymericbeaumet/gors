@@ -149,6 +149,8 @@ pub(super) const GO_SLICE_GO_STRING_AND_VALUE: &[RuntimeType] =
     &[RuntimeType::GoSliceGoString, RuntimeType::GoString];
 pub(super) const GO_INTERFACE_BOX_GO_SLICE_GO_STRING: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoSliceGoString];
+pub(super) const GO_INTERFACE_BOX_GO_SLICE_I64: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::GoSliceI64];
 pub(super) const GO_MAP_STRING_INTERFACE_PARAMETER: &[RuntimeType] =
     &[RuntimeType::GoMapStringInterface];
 pub(super) const GO_MAP_STRING_INTERFACE_AND_KEY: &[RuntimeType] =
