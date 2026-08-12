@@ -222,7 +222,7 @@ impl FunctionLowerer {
             }
             if !matches!(
                 element.underlying(),
-                Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8) | Ty::Interface(_)
+                Ty::Int(_) | Ty::Uint(_) | Ty::Interface(_)
             ) {
                 return Err(Diagnostic::unsupported(
                     "spread append currently supports integer, byte, and interface slices",
@@ -248,10 +248,7 @@ impl FunctionLowerer {
                 }
                 if !matches!(
                     element.underlying(),
-                    Ty::Int(IntTy::Int | IntTy::Int32)
-                        | Ty::Uint(UintTy::Uint8)
-                        | Ty::String
-                        | Ty::Interface(_)
+                    Ty::Int(_) | Ty::Uint(_) | Ty::String | Ty::Interface(_)
                 ) && element.snapshot_function_result().is_none()
                 {
                     return Err(Diagnostic::unsupported(

@@ -400,14 +400,10 @@ fn runtime_builtin(
         {
             hir::Builtin::AggregateMapLen
         }
-        (LengthCapacityOp::Len, Ty::Slice(element))
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
+        (LengthCapacityOp::Len, Ty::Slice(element)) if element.uses_i64_slice_carrier() => {
             hir::Builtin::SliceI64Len
         }
-        (LengthCapacityOp::Cap, Ty::Slice(element))
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
+        (LengthCapacityOp::Cap, Ty::Slice(element)) if element.uses_i64_slice_carrier() => {
             hir::Builtin::SliceI64Cap
         }
         (LengthCapacityOp::Len, Ty::Slice(element))

@@ -220,7 +220,7 @@ impl Function {
                         "integer slice literal MIR omitted its slice type",
                     ));
                 };
-                if !matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                if !element.uses_i64_slice_carrier() {
                     return Err(Diagnostic::backend(format!(
                         "integer slice literal MIR has unsupported type {ty:?}"
                     )));

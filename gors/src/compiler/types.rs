@@ -287,6 +287,17 @@ impl Ty {
         )
     }
 
+    /// Whether a slice of this element uses the shared `i64` slice carrier.
+    ///
+    /// `uint8` is excluded: a byte slice keeps its own dense representation,
+    /// so an element test that selects a runtime operation must not fold the
+    /// two together.
+    #[must_use]
+    pub fn uses_i64_slice_carrier(&self) -> bool {
+        matches!(self.underlying(), Self::Int(_) | Self::Uint(_))
+            && self.underlying() != &Self::Uint(UintTy::Uint8)
+    }
+
     /// Fields of a struct whose executable representation is a fixed array of
     /// `i64` carriers.
     ///
@@ -375,11 +386,7 @@ impl Ty {
         if let Self::Slice(element) = self {
             return matches!(
                 element.underlying(),
-                Self::Bool
-                    | Self::Int(IntTy::Int | IntTy::Int32)
-                    | Self::Uint(UintTy::Uint8)
-                    | Self::String
-                    | Self::Interface(_)
+                Self::Bool | Self::Int(_) | Self::Uint(_) | Self::String | Self::Interface(_)
             ) || element.uses_interface_aggregate_representation()
                 || element.snapshot_function_result().is_some();
         }

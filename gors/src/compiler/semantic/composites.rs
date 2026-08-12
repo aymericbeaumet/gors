@@ -8,7 +8,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, SyntaxSource};
-use crate::compiler::types::{ConstValue, IntTy, Ty, UintTy};
+use crate::compiler::types::{ConstValue, Ty, UintTy};
 
 impl FunctionLowerer {
     #[allow(clippy::too_many_arguments)]
@@ -91,8 +91,7 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let integer_elements =
-            matches!(element_ty.underlying(), Ty::Int(IntTy::Int | IntTy::Int32));
+        let integer_elements = matches!(element_ty.underlying(), Ty::Int(_) | Ty::Uint(_));
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
         let string_elements = element_ty.underlying() == &Ty::String;
