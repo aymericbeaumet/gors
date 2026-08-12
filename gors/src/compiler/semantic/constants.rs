@@ -425,9 +425,14 @@ fn eval_constant_call(
             source,
             iota,
         )?;
-        if !is_assignable(&actual, &target) || !value.is_representable_as(&target) {
+        // A constant converts to any type it is representable by. Conversion is
+        // deliberately wider than assignability, which is what admits the
+        // standard library's `int64(MaxUint64 >> 1)`: a `uint64` constant is
+        // never assignable to `int64`, yet every value up to that type's
+        // maximum converts exactly.
+        if !value.is_representable_as(&target) {
             return Err(Diagnostic::semantic(
-                format!("constant is not representable as {target:?}"),
+                format!("constant of type {actual:?} is not representable as {target:?}"),
                 source,
             ));
         }
