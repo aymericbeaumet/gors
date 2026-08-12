@@ -13,7 +13,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ComplexTy, ConstValue, ExactNumber, FloatTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, ExactNumber, FloatTy, Ty, UintTy, UntypedTy};
 
 pub(in crate::compiler) fn eval_constant(
     expression: &ExprSyntax,
@@ -273,6 +273,28 @@ pub(super) fn eval_constant_with_length_capacity(
                     }
                 }
                 (crate::token::Token::NOT, ConstValue::Bool(value)) => ConstValue::Bool(!value),
+                // `^x` is `m ^ x`, with `m` all bits set for an unsigned operand
+                // and `-1` for a signed or untyped one, so the unsigned case
+                // complements within the operand's exact width while the signed
+                // case is the width-independent `-x - 1`.
+                (crate::token::Token::XOR, ConstValue::Int(value)) => {
+                    let value = BigInt::parse_bytes(value.as_bytes(), 10)
+                        .ok_or_else(|| Diagnostic::semantic("invalid exact integer", source))?;
+                    let complement = match ty.underlying() {
+                        Ty::Uint(kind) => {
+                            let bits: u32 = match kind {
+                                UintTy::Uint | UintTy::Uint64 | UintTy::Uintptr => 64,
+                                UintTy::Uint8 => 8,
+                                UintTy::Uint16 => 16,
+                                UintTy::Uint32 => 32,
+                            };
+                            let mask = (BigInt::from(1_u8) << bits) - BigInt::from(1_u8);
+                            mask - value
+                        }
+                        _ => -value - BigInt::from(1_u8),
+                    };
+                    ConstValue::Int(complement.to_string())
+                }
                 _ => {
                     return Err(Diagnostic::unsupported(
                         "constant unary operation is not implemented",

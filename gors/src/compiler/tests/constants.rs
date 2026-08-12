@@ -604,3 +604,35 @@ fn check_only_predeclared_values_require_resolved_identity_and_iota_context() {
         );
     }
 }
+
+#[test]
+fn constant_bitwise_complement_follows_operand_signedness_and_width() {
+    // `^x` is `m ^ x`, with m all bits set for an unsigned operand and -1 for a
+    // signed or untyped one. `ptrSize` is the standard library's spelling of
+    // the target pointer width and exercises the unsigned width exactly.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const ptrSize = 4 << (^uintptr(0) >> 63)
+            const hiBits = 0x8080808080808080 >> (64 - 8*ptrSize)
+
+            type Width uint16
+
+            const namedComplement = ^Width(1)
+
+            func main() {
+                println(ptrSize, uint64(hiBits) == 0x8080808080808080)
+                println(^uint8(0), ^uint16(1), ^uint32(2))
+                println(^uint64(0) == 18446744073709551615)
+                println(^0, ^5, ^int8(3), ^int64(-1))
+                println(uint16(namedComplement))
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"8 true\n255 65534 4294967293\ntrue\n-1 -6 -4 0\n65534\n"
+    );
+}
