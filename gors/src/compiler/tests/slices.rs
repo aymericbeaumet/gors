@@ -484,3 +484,34 @@ fn integer_slices_keep_their_declared_element_kinds() {
           3 255 true\n"
     );
 }
+
+#[test]
+fn aggregate_struct_slices_report_their_length() {
+    // A slice of structs uses the tagged interface-slice representation, so
+    // its length is that representation's runtime operation. String and byte
+    // slices keep their own dense representations and must not be folded in.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Info struct {
+                Name    string
+                Removed int
+            }
+
+            var table = []Info{
+                {Name: "a", Removed: 24},
+                {Name: "b", Removed: 25},
+            }
+
+            func main() {
+                println(len(table))
+                local := table[1]
+                println(local.Name, local.Removed)
+                println(len([]string{"x", "y", "z"}), len([]int{1, 2}), len([]byte("abcd")))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2\nb 25\n3 2 4\n");
+}
