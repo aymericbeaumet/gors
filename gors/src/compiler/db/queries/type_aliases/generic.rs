@@ -40,18 +40,28 @@ pub(in crate::compiler::db) fn collect_generic_type_symbols(
             );
         }
         for definition in projection.type_definitions(db) {
-            let syntax = definition.syntax(db);
-            // Only parameterized declarations are generic symbols. Admitting an
-            // ordinary definition here would make every unrelated type edit
-            // change this map and would treat `Spare[...]` as an instantiation.
-            let Some(type_parameters) = &syntax.type_parameters else {
+            // Exactly the declarations that are not ordinary named types belong
+            // here: parameterized ones and constraint interfaces, which resolve
+            // through this map because package type resolution excludes them. An
+            // ordinary definition must stay out, so that an unrelated type edit
+            // leaves this map equal and `Spare[...]` is not read as an
+            // instantiation.
+            if definition.ordinary(db) {
                 continue;
-            };
+            }
+            let syntax = definition.syntax(db);
+            let type_parameters =
+                syntax
+                    .type_parameters
+                    .clone()
+                    .unwrap_or_else(|| FieldListSyntax {
+                        fields: Arc::from([]),
+                    });
             result.insert(
                 definition.name(db).to_string(),
                 GenericTypeSymbol {
                     id: QualifiedDefId::new(input.package(db), definition.id(db)),
-                    type_parameters: Arc::new(type_parameters.clone()),
+                    type_parameters: Arc::new(type_parameters),
                     underlying: syntax.underlying.clone(),
                     alias: false,
                 },
