@@ -288,7 +288,12 @@ impl Ty {
     }
 
     /// Fields of a struct whose executable representation is a fixed array of
-    /// Go `int` values.
+    /// `i64` carriers.
+    ///
+    /// Every predeclared scalar integer type shares that one carrier, so each
+    /// field keeps its own declared kind while the storage stays uniform. Field
+    /// reads and writes therefore select width- and signedness-specific
+    /// operations from the field type, not from the carrier.
     #[must_use]
     pub fn bootstrap_i64_struct_fields(&self) -> Option<&[StructField]> {
         let Self::Struct(fields) = self.underlying() else {
@@ -296,7 +301,7 @@ impl Ty {
         };
         fields
             .iter()
-            .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int))
+            .all(|field| matches!(field.ty.underlying(), Self::Int(_) | Self::Uint(_)))
             .then_some(fields)
     }
 

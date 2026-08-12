@@ -54,6 +54,9 @@ impl RuntimeOp {
                 IntegerKindConstraint::I64OrI32
             }
             (Self::GoSliceU8Set, 2) => IntegerKindConstraint::Exact(IntegerKind::U8),
+            // A struct field keeps its own declared integer kind while the
+            // pointee stores every field in one shared `i64` carrier.
+            (Self::GoPointerStructI64Set, 2) => IntegerKindConstraint::Any,
             (Self::GoStringFromRune, 0) => IntegerKindConstraint::Any,
             _ => IntegerKindConstraint::Exact(IntegerKind::I64),
         }
@@ -67,6 +70,8 @@ impl RuntimeOp {
         match (self, position) {
             (Self::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
             (Self::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
+            // The carrier is shared; the field's declared kind is the result.
+            (Self::GoPointerStructI64Get, 0) => IntegerKindConstraint::Any,
             (Self::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
             (Self::GoSliceU8Index | Self::GoStringIndex, 0) => {
                 IntegerKindConstraint::Exact(IntegerKind::U8)

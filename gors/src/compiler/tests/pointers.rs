@@ -206,3 +206,51 @@ fn generated_integer_struct_pointers_preserve_identity_aliasing_and_value_copies
         run.rust
     );
 }
+
+#[test]
+fn struct_pointer_fields_keep_their_declared_integer_kinds() {
+    // Every predeclared scalar integer shares one i64 carrier, so a struct of
+    // mixed integer kinds has an executable pointee. Each field still selects
+    // width- and signedness-specific operations from its own declared type,
+    // which is what keeps a high-bit uint64 printing, dividing, and shifting
+    // as Go defines it rather than as its signed carrier.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type S struct {
+                u uint64
+                i int64
+                b uint8
+                w uint16
+                n int
+            }
+
+            func main() {
+                p := &S{}
+                p.u = 18446744073709551615
+                p.i = -5
+                p.b = 200
+                p.w = 65535
+                p.n = 7
+                println(p.u, p.i, p.b, p.w, p.n)
+                println(p.u > 0, p.u/3, p.i/2)
+
+                q := &S{u: 9223372036854775808, i: -1}
+                println(q.u, q.i, q.u>>1)
+
+                var v S
+                v.u = 18446744073709551615
+                println(v.u, v.b)
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"18446744073709551615 -5 200 65535 7\n\
+          true 6148914691236517205 -2\n\
+          9223372036854775808 -1 4611686018427387904\n\
+          18446744073709551615 0\n"
+    );
+}
