@@ -515,7 +515,7 @@ export class V86JobCoordinator {
 	private async readPublishedText(
 		flight: ActiveFlight,
 		path: string,
-		optional: boolean,
+		allowEmpty: boolean,
 	): Promise<string> {
 		let bytes: Uint8Array;
 		flight.guestWorkStarted = true;
@@ -526,12 +526,17 @@ export class V86JobCoordinator {
 			);
 		} catch (error) {
 			throwIfAborted(flight.controller.signal);
-			// v86's 9p read_file rejects a zero-byte guest file as "not found", so
-			// a legitimately empty publication (a clean rustc stderr, a program
-			// that prints nothing) is indistinguishable from a missing one. The
-			// job's exit status is always a non-empty number read as a required
-			// file first, so an unreadable optional file here is simply empty.
-			if (optional) return "";
+			// V86 uses Error.prototype and this exact message for both missing
+			// files and empty guest inodes. Status files must remain non-empty;
+			// output may be empty, but other read failures still poison the VM.
+			if (
+				allowEmpty &&
+				error instanceof Error &&
+				error.message === "File not found"
+			) {
+				this.assertFlight(flight);
+				return "";
+			}
 			throw new RustRunnerProtocolError(
 				`guest did not publish required file ${path}: ${
 					error instanceof Error ? error.message : String(error)
