@@ -170,19 +170,3 @@ jobs:
           fi
           gh release upload "$RELEASE_VERSION" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
           gh release edit "$RELEASE_VERSION" --draft=false --prerelease="$prerelease"
-
-  update-homebrew:
-    needs: publish
-    runs-on: ubuntu-24.04
-    env:
-      COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-    steps:
-      - uses: actions/checkout@v6
-      - name: Update Homebrew formula when tap credentials are configured
-        if: env.COMMITTER_TOKEN != ''
-        uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: gors
-          homebrew-tap: aymericbeaumet/homebrew-tap
-          tag-name: ${{ github.ref_name }}
-          download-url: https://github.com/aymericbeaumet/gors/archive/refs/tags/${{ github.ref_name }}.tar.gz

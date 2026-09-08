@@ -94,7 +94,6 @@ reachable from `main`. Update the package version and merge the release changes
 before tagging. Publication uploads the complete validated asset set to a draft,
 then publishes it; an already published release cannot be overwritten by reruns.
 
-After publication, an optional Homebrew step updates the source-based formula in
-`aymericbeaumet/homebrew-tap` when the `HOMEBREW_TAP_TOKEN` repository secret is
-configured. Missing tap credentials skip that step and do not prevent publishing
+Publication finishes after the six native archives and `SHA256SUMS` are public.
+There is no Homebrew formula or tap update in this release pipeline; install from
 the native archives. Building a release does not create a persistent branch.
