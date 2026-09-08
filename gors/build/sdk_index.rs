@@ -116,7 +116,9 @@ fn load_packages_from_sdk(
     std::fs::create_dir_all(&go_tmp)?;
     std::fs::create_dir_all(&go_mod_cache)?;
 
-    let go_binary = sdk_path.join("bin/go");
+    let go_binary = sdk_path
+        .join("bin")
+        .join(if cfg!(windows) { "go.exe" } else { "go" });
     if !go_binary.is_file() {
         return Err(index_error(format!(
             "pinned Go SDK has no executable at {}",
@@ -147,6 +149,13 @@ fn load_packages_from_sdk(
         .arg("-deps")
         .arg("-tags=gors")
         .args(patterns);
+
+    #[cfg(windows)]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| index_error("Windows Go source oracle requires SystemRoot"))?;
+        command.env("SystemRoot", system_root);
+    }
 
     let output = command.output()?;
     if !output.status.success() {

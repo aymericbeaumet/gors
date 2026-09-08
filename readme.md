@@ -53,6 +53,10 @@ Or from a checkout:
 cargo install --path gors-cli
 ```
 
+Native release archives are built with mise for Linux, macOS, and Windows on
+amd64 and arm64. See [release installation and validation](docs/releasing.md)
+for toolchain requirements and current Windows command support.
+
 ## Usage
 
 ```bash

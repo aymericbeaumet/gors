@@ -1,4 +1,3 @@
-use flate2::read::GzDecoder;
 use gors_runtime_abi::RuntimeAbiManifest;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -7,6 +6,8 @@ use std::path::{Path, PathBuf};
 mod platform;
 #[path = "build/runtime_artifact.rs"]
 mod runtime_artifact;
+#[path = "build/sdk_archive.rs"]
+mod sdk_archive;
 #[path = "build/sdk_index.rs"]
 mod sdk_index;
 
@@ -211,18 +212,15 @@ fn target_source_platform() -> BuildResult<platform::GoPlatform> {
 
 fn download_url(go_version: &str) -> BuildResult<String> {
     let host = host_sdk_platform()?;
+    let extension = sdk_archive::SdkArchiveFormat::for_host(host.os).extension();
     Ok(format!(
-        "https://dl.google.com/go/go{go_version}.{}-{}.tar.gz",
+        "https://dl.google.com/go/go{go_version}.{}-{}.{extension}",
         host.os, host.arch
     ))
 }
 
 fn checksum_url(go_version: &str) -> BuildResult<String> {
-    let host = host_sdk_platform()?;
-    Ok(format!(
-        "https://dl.google.com/go/go{go_version}.{}-{}.tar.gz.sha256",
-        host.os, host.arch
-    ))
+    Ok(format!("{}.sha256", download_url(go_version)?))
 }
 
 fn download_bytes(url: &str) -> BuildResult<Vec<u8>> {
@@ -278,17 +276,15 @@ fn ensure_go_sdk(go_version: &str) -> BuildResult<PathBuf> {
         return Ok(sdk_path);
     }
 
-    let tarball_path = ensure_go_tarball(&cache, go_version)?;
+    let archive_path = ensure_go_archive(&cache, go_version)?;
     let tmp_root = cache.join(format!("{key}.tmp-{}", std::process::id()));
     if tmp_root.exists() {
         std::fs::remove_dir_all(&tmp_root)?;
     }
     std::fs::create_dir_all(&tmp_root)?;
 
-    let tarball = std::fs::File::open(&tarball_path)?;
-    let decoder = GzDecoder::new(tarball);
-    let mut archive = tar::Archive::new(decoder);
-    archive.unpack(&tmp_root)?;
+    sdk_archive::SdkArchiveFormat::for_host(host_sdk_platform()?.os)
+        .extract(&archive_path, &tmp_root)?;
     validate_sdk_version(&tmp_root.join("go"), go_version)?;
 
     if sdk_root.exists() {
@@ -298,13 +294,14 @@ fn ensure_go_sdk(go_version: &str) -> BuildResult<PathBuf> {
     Ok(sdk_path)
 }
 
-fn ensure_go_tarball(cache: &Path, go_version: &str) -> BuildResult<PathBuf> {
+fn ensure_go_archive(cache: &Path, go_version: &str) -> BuildResult<PathBuf> {
     std::fs::create_dir_all(cache)?;
     let key = go_sdk_cache_key(go_version)?;
-    let cached_tarball = cache.join(format!("{key}.tar.gz"));
-    if cached_tarball.exists() {
-        eprintln!("Using cached Go SDK tarball: {}", cached_tarball.display());
-        return Ok(cached_tarball);
+    let extension = sdk_archive::SdkArchiveFormat::for_host(host_sdk_platform()?.os).extension();
+    let cached_archive = cache.join(format!("{key}.{extension}"));
+    if cached_archive.exists() {
+        eprintln!("Using cached Go SDK archive: {}", cached_archive.display());
+        return Ok(cached_archive);
     }
 
     eprintln!("Downloading Go {go_version} SDK...");
@@ -316,9 +313,9 @@ fn ensure_go_tarball(cache: &Path, go_version: &str) -> BuildResult<PathBuf> {
     let expected = String::from_utf8_lossy(&checksum_bytes).trim().to_string();
     verify_checksum(&data, &expected)?;
 
-    std::fs::write(&cached_tarball, &data)?;
-    eprintln!("Cached Go SDK tarball at {}", cached_tarball.display());
-    Ok(cached_tarball)
+    std::fs::write(&cached_archive, &data)?;
+    eprintln!("Cached Go SDK archive at {}", cached_archive.display());
+    Ok(cached_archive)
 }
 
 fn validate_sdk_version(sdk_path: &Path, go_version: &str) -> BuildResult<()> {
@@ -455,6 +452,7 @@ fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/platform.rs");
     println!("cargo:rerun-if-changed=build/runtime_artifact.rs");
+    println!("cargo:rerun-if-changed=build/sdk_archive.rs");
     println!("cargo:rerun-if-changed=build/sdk_index.rs");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -465,6 +463,7 @@ fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=../gors-runtime/src");
     println!("cargo:rerun-if-changed=../gors-runtime-abi/src");
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
+    println!("cargo:rerun-if-env-changed=SystemRoot");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ENDIAN");

@@ -14,6 +14,7 @@ pub fn host_sdk_platform(rust_os: &str, rust_arch: &str) -> Result<GoPlatform, S
     let os = match rust_os {
         "macos" => "darwin",
         "linux" => "linux",
+        "windows" => "windows",
         unsupported => {
             return Err(format!(
                 "unsupported host OS for Go SDK download: {unsupported}"
@@ -49,6 +50,7 @@ pub fn target_source_platform(rust_os: &str, rust_arch: &str) -> Result<GoPlatfo
             let os = match rust_os {
                 "macos" => "darwin",
                 "linux" => "linux",
+                "windows" => "windows",
                 unsupported => {
                     return Err(format!(
                         "unsupported Rust target OS for Go source metadata: {unsupported}"
@@ -93,6 +95,18 @@ mod tests {
     }
 
     #[test]
+    fn windows_hosts_and_targets_select_both_release_architectures() {
+        for (rust_arch, go_arch) in [("x86_64", "amd64"), ("aarch64", "arm64")] {
+            let expected = Ok(GoPlatform {
+                os: "windows",
+                arch: go_arch,
+            });
+            assert_eq!(host_sdk_platform("windows", rust_arch), expected);
+            assert_eq!(target_source_platform("windows", rust_arch), expected);
+        }
+    }
+
+    #[test]
     fn target_platform_is_independent_from_the_host() {
         let host = host_sdk_platform("linux", "x86_64").unwrap();
         let target = target_source_platform("linux", "aarch64").unwrap();
@@ -121,9 +135,9 @@ mod tests {
 
     #[test]
     fn unsupported_hosts_and_targets_fail_explicitly() {
-        assert!(host_sdk_platform("windows", "x86_64").is_err());
+        assert!(host_sdk_platform("freebsd", "x86_64").is_err());
         assert!(host_sdk_platform("linux", "riscv64").is_err());
-        assert!(target_source_platform("windows", "x86_64").is_err());
+        assert!(target_source_platform("freebsd", "x86_64").is_err());
         assert!(target_source_platform("linux", "riscv64").is_err());
         assert!(target_source_platform("unknown", "aarch64").is_err());
     }

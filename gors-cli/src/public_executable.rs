@@ -156,6 +156,7 @@ impl std::error::Error for PublicExecutableError {
     }
 }
 
+#[cfg(unix)]
 fn absolute_path(path: &Path) -> Result<PathBuf, PublicExecutableError> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
