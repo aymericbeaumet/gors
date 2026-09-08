@@ -440,9 +440,7 @@ impl FunctionLowerer {
                 }
                 let (builtin, element_ty) = match base.ty.underlying() {
                     Ty::String => (hir::Builtin::StringIndex, Ty::Uint(UintTy::Uint8)),
-                    Ty::Slice(element)
-                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-                    {
+                    Ty::Slice(element) if element.uses_i64_slice_carrier() => {
                         (hir::Builtin::SliceI64Index, element.as_ref().clone())
                     }
                     Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
@@ -566,19 +564,16 @@ impl FunctionLowerer {
                     Ty::Slice(element)
                         if matches!(
                             element.underlying(),
-                            Ty::Int(IntTy::Int | IntTy::Int32)
-                                | Ty::Uint(UintTy::Uint8)
-                                | Ty::String
+                            Ty::Int(_) | Ty::Uint(_) | Ty::String
                         ) =>
                     {
-                        let builtin =
-                            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
-                                hir::Builtin::SliceI64Range
-                            } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
-                                hir::Builtin::SliceU8Range
-                            } else {
-                                hir::Builtin::SliceGoStringRange
-                            };
+                        let builtin = if element.uses_i64_slice_carrier() {
+                            hir::Builtin::SliceI64Range
+                        } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
+                            hir::Builtin::SliceU8Range
+                        } else {
+                            hir::Builtin::SliceGoStringRange
+                        };
                         let max_bound =
                             self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
                         if let Some(max_value) = max

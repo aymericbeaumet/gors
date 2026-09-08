@@ -141,10 +141,7 @@ impl FunctionLowerer {
             Ty::Slice(element)
                 if matches!(
                     element.underlying(),
-                    Ty::Int(IntTy::Int | IntTy::Int32)
-                        | Ty::Uint(UintTy::Uint8)
-                        | Ty::Bool
-                        | Ty::String
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Bool | Ty::String
                 ) =>
             {
                 let set = if element.underlying() == &Ty::Bool {

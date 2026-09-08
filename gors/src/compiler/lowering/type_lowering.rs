@@ -53,16 +53,15 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::String => Ok(RustType::GoString),
         Ty::Interface(_) => Ok(RustType::GoInterface),
         Ty::Function(_) => Ok(RustType::GoInterface),
-        Ty::Slice(element)
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
-            Ok(RustType::GoSliceI64)
-        }
-        Ty::Slice(element) if element.snapshot_function_result().is_some() => {
-            Ok(RustType::GoSliceI64)
-        }
+        // `[]byte` keeps its own byte-slice representation; every other scalar
+        // integer element shares the one i64 carrier, and the element's own
+        // declared kind still selects each operation.
         Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
             Ok(RustType::GoSliceU8)
+        }
+        Ty::Slice(element) if element.uses_i64_slice_carrier() => Ok(RustType::GoSliceI64),
+        Ty::Slice(element) if element.snapshot_function_result().is_some() => {
+            Ok(RustType::GoSliceI64)
         }
         Ty::Slice(element) if element.underlying() == &Ty::Bool => Ok(RustType::GoSliceBool),
         Ty::Slice(element) if element.underlying() == &Ty::String => Ok(RustType::GoSliceGoString),

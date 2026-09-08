@@ -70,11 +70,12 @@ pub(super) fn coerce_expr(
     {
         coerce_expr(left, expected, source)?;
     }
-    let representation_preserving_conversion = expr.ty != *expected
-        && (expr.ty.underlying() == expected.underlying()
+    let representation_preserving_conversion = !expr.ty.is_identical_to(expected)
+        && (expr.ty.underlying().is_identical_to(expected.underlying())
             || matches!(
                 (expr.ty.underlying(), expected.underlying()),
-                (Ty::Channel(_, actual), Ty::Channel(_, expected)) if actual == expected
+                (Ty::Channel(_, actual), Ty::Channel(_, expected))
+                    if actual.is_identical_to(expected)
             ));
     if representation_preserving_conversion
         && !matches!(
@@ -92,10 +93,10 @@ pub(super) fn coerce_expr(
 }
 
 pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
-    if same_semantic_type(actual, expected) {
+    if actual.is_identical_to(expected) {
         return true;
     }
-    if actual.underlying() == expected.underlying()
+    if actual.underlying().is_identical_to(expected.underlying())
         && (!is_defined_type(actual) || !is_defined_type(expected))
     {
         return true;
@@ -110,7 +111,7 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
         Ty::Channel(expected_direction, expected_element),
     ) = (actual.underlying(), expected.underlying())
     {
-        return actual_element == expected_element
+        return actual_element.is_identical_to(expected_element)
             && (*actual_direction == *expected_direction
                 || *actual_direction == crate::compiler::types::ChannelDir::SendReceive);
     }
@@ -150,37 +151,6 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
 
 fn is_defined_type(ty: &Ty) -> bool {
     matches!(ty, Ty::Named { .. } | Ty::LocalNamed { .. })
-}
-
-fn same_semantic_type(left: &Ty, right: &Ty) -> bool {
-    if left == right {
-        return true;
-    }
-    match (left, right) {
-        (
-            Ty::Named {
-                definition: left, ..
-            }
-            | Ty::NamedRef { definition: left },
-            Ty::Named {
-                definition: right, ..
-            }
-            | Ty::NamedRef { definition: right },
-        ) => left == right,
-        (Ty::Pointer(left), Ty::Pointer(right)) | (Ty::Slice(left), Ty::Slice(right)) => {
-            same_semantic_type(left, right)
-        }
-        (Ty::Array(left_length, left), Ty::Array(right_length, right)) => {
-            left_length == right_length && same_semantic_type(left, right)
-        }
-        (Ty::Map(left_key, left_value), Ty::Map(right_key, right_value)) => {
-            same_semantic_type(left_key, right_key) && same_semantic_type(left_value, right_value)
-        }
-        (Ty::Channel(left_direction, left), Ty::Channel(right_direction, right)) => {
-            left_direction == right_direction && same_semantic_type(left, right)
-        }
-        _ => false,
-    }
 }
 
 pub(super) fn common_operand_type(left: &Ty, right: &Ty) -> Option<Ty> {

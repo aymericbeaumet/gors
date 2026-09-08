@@ -146,7 +146,7 @@ fn aliases_of_defined_types_preserve_the_definition_identity() {
     let signature = db.typed_signature(file, value).unwrap();
     let [
         gors::compiler::types::Ty::Named {
-            definition,
+            identity,
             underlying,
         },
     ] = signature.signature().results.as_slice()
@@ -167,7 +167,7 @@ fn aliases_of_defined_types_preserve_the_definition_identity() {
             .first()
             .expect("defined type descriptor")
             .id(),
-        *definition
+        identity.definition().definition()
     );
     assert_eq!(analysis.type_aliases().len(), 1);
 }

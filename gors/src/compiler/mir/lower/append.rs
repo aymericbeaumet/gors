@@ -5,7 +5,7 @@ use super::{FunctionLowerer, Operand, Place, Provenance};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{IntTy, Ty, UintTy};
+use crate::compiler::types::{Ty, UintTy};
 
 impl FunctionLowerer {
     pub(super) fn lower_append_expr(
@@ -42,9 +42,7 @@ impl FunctionLowerer {
                     Provenance::Source(spread.source),
                 )?;
                 let builtin = match result_ty.underlying() {
-                    Ty::Slice(element)
-                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-                    {
+                    Ty::Slice(element) if element.uses_i64_slice_carrier() => {
                         hir::Builtin::SliceI64AppendSlice
                     }
                     Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
@@ -79,14 +77,10 @@ impl FunctionLowerer {
             return Ok(destination);
         }
         let (builtin, appended) = match result_ty.underlying() {
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-            {
-                (
-                    hir::Builtin::SliceI64AppendSlice,
-                    self.pack_i64_append_values(values, element.as_ref().clone(), source)?,
-                )
-            }
+            Ty::Slice(element) if element.uses_i64_slice_carrier() => (
+                hir::Builtin::SliceI64AppendSlice,
+                self.pack_i64_append_values(values, element.as_ref().clone(), source)?,
+            ),
             Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => (
                 hir::Builtin::SliceU8AppendSlice,
                 self.pack_u8_append_values(values, element.as_ref().clone(), source)?,

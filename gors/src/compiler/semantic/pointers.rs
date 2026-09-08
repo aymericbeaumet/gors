@@ -299,9 +299,7 @@ impl FunctionLowerer {
     ) -> Result<hir::Expr, Diagnostic> {
         let value = self.lower_expr(expression, None)?;
         let builtin = if let Ty::Slice(element) = value.ty.underlying() {
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
-                || element.snapshot_function_result().is_some()
-            {
+            if element.uses_i64_slice_carrier() || element.snapshot_function_result().is_some() {
                 hir::Builtin::SliceI64IsNil
             } else if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) {
                 hir::Builtin::SliceU8IsNil

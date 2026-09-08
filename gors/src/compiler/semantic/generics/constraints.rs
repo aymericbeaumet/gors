@@ -14,15 +14,6 @@ use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, FieldListSyntax};
 use crate::compiler::types::{Signature, Ty};
 use crate::token::Token;
 
-pub(super) fn type_parameter_names(
-    fields: &FieldListSyntax,
-    source: SourceRef,
-) -> Result<BTreeSet<String>, Diagnostic> {
-    Ok(type_parameter_names_in_order(fields, source)?
-        .into_iter()
-        .collect())
-}
-
 pub(super) fn type_parameter_names_in_order(
     fields: &FieldListSyntax,
     source: SourceRef,
@@ -376,6 +367,12 @@ fn method_set_signature(
                 )
             });
     }
+    if !methods.complete {
+        return Err(Diagnostic::unsupported(
+            "method-constrained generic instantiation in a package type declaration requires package method facts",
+            source,
+        ));
+    }
     let resolved = resolve_method_set_member_with(
         actual,
         name,
@@ -503,6 +500,7 @@ pub(super) fn infer_from_instantiated_constraint(
 pub(super) fn validate_declared_constraints(
     fields: Option<&FieldListSyntax>,
     substitutions: &BTreeMap<String, Ty>,
+    positional: Option<&[Ty]>,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     methods: MethodEnvironment<'_>,
@@ -513,6 +511,7 @@ pub(super) fn validate_declared_constraints(
     validate_constraints(
         fields,
         substitutions,
+        positional,
         aliases,
         generic_types,
         methods,
@@ -523,6 +522,7 @@ pub(super) fn validate_declared_constraints(
 pub(super) fn validate_constraints(
     fields: &FieldListSyntax,
     substitutions: &BTreeMap<String, Ty>,
+    positional: Option<&[Ty]>,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     methods: MethodEnvironment<'_>,
@@ -530,6 +530,7 @@ pub(super) fn validate_constraints(
 ) -> Result<(), Diagnostic> {
     let mut environment = aliases.clone();
     environment.extend(substitutions.clone());
+    let mut position = 0_usize;
     for field in &*fields.fields {
         let constraint = field
             .ty
@@ -539,7 +540,15 @@ pub(super) fn validate_constraints(
             Diagnostic::semantic("type parameter declaration requires a name", source)
         })?;
         for name in &**names {
-            let actual = substitutions.get(name.name.as_ref()).ok_or_else(|| {
+            let actual = if let Some(positional) = positional {
+                positional.get(position)
+            } else if name.name.as_ref() == "_" {
+                position = position.saturating_add(1);
+                continue;
+            } else {
+                substitutions.get(name.name.as_ref())
+            }
+            .ok_or_else(|| {
                 Diagnostic::semantic(format!("cannot infer type parameter {}", name.name), source)
             })?;
             if !constraint_allows(
@@ -558,6 +567,7 @@ pub(super) fn validate_constraints(
                     source,
                 ));
             }
+            position = position.saturating_add(1);
         }
     }
     Ok(())
@@ -599,7 +609,7 @@ fn constraint_allows(
                 )
                 .map(|()| true)
             } else {
-                Ok(expected == actual)
+                Ok(expected.is_identical_to(actual))
             }
         }
         ExprSyntaxKind::Ident(ident) if generic_types.contains_key(ident.name.as_ref()) => {
@@ -788,10 +798,10 @@ fn type_pattern_matches(
     if let ExprSyntaxKind::Ident(ident) = &pattern.kind
         && let Some(expected) = environment.get(ident.name.as_ref())
     {
-        return Ok(expected == actual);
+        return Ok(expected.is_identical_to(actual));
     }
     lower_type_with_generics(pattern, environment, generic_types, methods, source)
-        .map(|expected| expected == *actual)
+        .map(|expected| expected.is_identical_to(actual))
 }
 
 fn is_comparable(ty: &Ty) -> bool {

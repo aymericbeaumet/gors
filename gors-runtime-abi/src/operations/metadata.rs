@@ -189,7 +189,9 @@ impl RuntimeOp {
             | Self::GoSliceGoStringClear
             | Self::GoSliceGoStringIsNil
             | Self::GoInterfaceBoxGoSliceGoString
-            | Self::GoInterfaceUnboxGoSliceGoString => NO_CAPABILITIES,
+            | Self::GoInterfaceUnboxGoSliceGoString
+            | Self::GoInterfaceBoxGoSliceI64
+            | Self::GoInterfaceUnboxGoSliceI64 => NO_CAPABILITIES,
         }
     }
 
@@ -511,6 +513,18 @@ impl RuntimeOp {
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NO_GO_PANICS,
+            ),
+            Self::GoInterfaceBoxGoSliceI64 => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoInterfaceUnboxGoSliceI64 => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                TYPE_ASSERTION_FAILURE,
             ),
             Self::GoInterfaceBoxGoSliceGoString => RuntimeEffects::new(
                 AllocationEffect::None,

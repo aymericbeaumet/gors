@@ -1,4 +1,5 @@
 use super::{compile_and_run, compile_program_and_run, raw_program, raw_program_files};
+use crate::compiler::compile_file;
 use crate::compiler::db::QueryKind;
 use crate::compiler::{CompilerSession, compile_program};
 
@@ -322,5 +323,50 @@ fn nested_address_taking_is_rejected_until_lifetimes_are_explicit() {
             .to_string()
             .contains("address-taking in nested control flow"),
         "{error}"
+    );
+}
+
+#[test]
+fn composite_literal_field_keys_are_not_package_variable_reads() {
+    // A composite literal's element key is a field name for a struct literal
+    // and a constant index for an array literal; only a map literal's key is
+    // itself a value expression. Counting every key as a value made a literal
+    // that names one of its own fields look self-dependent, which is the shape
+    // of the standard library's `var Removed = []RemovedInfo{{Removed: 24}}`.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type RemovedInfo struct {
+                Name    string
+                Removed int
+            }
+
+            const Limit = 2
+
+            var Removed = RemovedInfo{Name: "x509sha1", Removed: 24}
+
+            var Indexed = [3]int{Limit: 7}
+
+            func main() {
+                local := Removed
+                println(local.Name, local.Removed)
+                println(Indexed[2], Indexed[0])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"x509sha1 24\n7 0\n");
+
+    // A genuine read of another package variable is still refused.
+    let errors = compile_file(
+        "main.go",
+        "package main\nvar Base = 5\nvar Derived = Base + 1\nfunc main() { println(Derived) }\n",
+    )
+    .err()
+    .expect("an initializer that reads another package variable must be rejected");
+    assert!(
+        errors.iter().any(|error| error.code == "GORS2001"),
+        "{errors:?}"
     );
 }

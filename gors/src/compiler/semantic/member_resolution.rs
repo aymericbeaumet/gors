@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::MethodSymbol;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::DefId;
+use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{StructField, Ty};
 
@@ -46,7 +46,7 @@ struct SearchNode {
     /// underlying pointer, but it does not inherit that pointer target's
     /// methods or promoted method set.
     methods_visible: bool,
-    seen: BTreeSet<DefId>,
+    seen: BTreeSet<QualifiedDefId>,
 }
 
 /// Resolve a selector using the one Go shallowest-depth namespace shared by
@@ -55,7 +55,7 @@ struct SearchNode {
 pub(super) fn resolve_selector_member(
     root_ty: &Ty,
     name: &str,
-    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    methods: &BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     lookup: MethodLookup,
     source: SourceRef,
 ) -> Result<ResolvedMember, Diagnostic> {
@@ -65,7 +65,7 @@ pub(super) fn resolve_selector_member(
 pub(super) fn resolve_selector_member_with(
     root_ty: &Ty,
     name: &str,
-    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    methods: &BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     lookup: MethodLookup,
     source: SourceRef,
     additional_method: &impl Fn(&Ty, &str) -> Result<Option<MethodSymbol>, Diagnostic>,
@@ -149,7 +149,7 @@ pub(super) fn resolve_selector_member_with(
 pub(super) fn resolve_method_set_member(
     root_ty: &Ty,
     name: &str,
-    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    methods: &BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     source: SourceRef,
 ) -> Result<MethodResolution, Diagnostic> {
     match resolve_selector_member(root_ty, name, methods, MethodLookup::MethodSet, source)? {
@@ -167,7 +167,7 @@ pub(super) fn resolve_method_set_member(
 pub(super) fn resolve_method_set_member_with(
     root_ty: &Ty,
     name: &str,
-    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    methods: &BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     source: SourceRef,
     additional_method: &impl Fn(&Ty, &str) -> Result<Option<MethodSymbol>, Diagnostic>,
 ) -> Result<MethodResolution, Diagnostic> {
@@ -190,7 +190,7 @@ pub(super) fn resolve_method_set_member_with(
 fn collect_direct_matches(
     node: &SearchNode,
     name: &str,
-    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    methods: &BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     lookup: MethodLookup,
     additional_method: &impl Fn(&Ty, &str) -> Result<Option<MethodSymbol>, Diagnostic>,
     matches: &mut Vec<ResolvedMember>,
@@ -259,7 +259,7 @@ fn receiver_adjustment(
     selected_ty: &Ty,
     receiver_ty: &Ty,
 ) -> Result<hir::MethodReceiverAdjustment, Diagnostic> {
-    if selected_ty == receiver_ty {
+    if selected_ty.is_identical_to(receiver_ty) {
         return Ok(hir::MethodReceiverAdjustment::Identity);
     }
     let selected_definition = receiver_definition(selected_ty);
@@ -292,11 +292,11 @@ pub(super) fn struct_fields(ty: &Ty) -> Option<&[StructField]> {
     }
 }
 
-pub(super) fn receiver_definition(ty: &Ty) -> Option<DefId> {
+pub(super) fn receiver_definition(ty: &Ty) -> Option<QualifiedDefId> {
     match ty {
-        Ty::Named { definition, .. } | Ty::NamedRef { definition } => Some(*definition),
+        Ty::Named { identity, .. } | Ty::NamedRef { identity } => Some(identity.definition()),
         Ty::Pointer(element) => match element.as_ref() {
-            Ty::Named { definition, .. } | Ty::NamedRef { definition } => Some(*definition),
+            Ty::Named { identity, .. } | Ty::NamedRef { identity } => Some(identity.definition()),
             _ => None,
         },
         _ => None,

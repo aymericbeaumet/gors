@@ -138,7 +138,7 @@ impl FunctionLowerer {
     ) -> Result<hir::Expr, Diagnostic> {
         let slice_nil = match ty.underlying() {
             Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                if element.uses_i64_slice_carrier()
                     || element.snapshot_function_result().is_some() =>
             {
                 Some(hir::Builtin::SliceI64Nil)

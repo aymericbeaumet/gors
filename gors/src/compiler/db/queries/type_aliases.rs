@@ -1,5 +1,7 @@
 //! Package-wide type-alias resolution over owned declaration projections.
 
+pub(super) mod generic;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -15,12 +17,12 @@ use crate::compiler::db::products::{CompilerStage, StageFailure, StageResult};
 use crate::compiler::db::telemetry::QueryKind;
 use crate::compiler::ids::{DefId, DefinitionKey, FileId, NodeId, QualifiedDefId};
 use crate::compiler::provenance::{DefinitionSourceTable, FileRange, SourceRef};
-use crate::compiler::semantic::ConstantSymbol;
+use crate::compiler::semantic::{ConstantSymbol, GenericTypeSymbol};
 use crate::compiler::syntax::{
     ExprSyntax, ExprSyntaxKind, FieldListSyntax, TypeAliasSyntax, TypeDeclarationLayout,
     TypeDefinitionSyntax,
 };
-use crate::compiler::types::Ty;
+use crate::compiler::types::{NamedTypeId, Ty};
 
 #[salsa::tracked]
 pub(in crate::compiler::db) struct TypeAliasProjection<'db> {
@@ -38,6 +40,12 @@ pub(in crate::compiler::db) struct TypeAliasProjection<'db> {
     #[tracked]
     #[returns(clone)]
     pub(super) layout: Arc<TypeDeclarationLayout>,
+    /// Whether this alias resolves as an ordinary named type. Classifying at
+    /// projection time keeps per-name type lookups from depending on the whole
+    /// declaration body, so an unrelated type edit cannot invalidate them.
+    #[tracked]
+    #[returns(copy)]
+    pub(super) ordinary: bool,
 }
 
 #[salsa::tracked]
@@ -56,6 +64,11 @@ pub(in crate::compiler::db) struct TypeDefinitionProjection<'db> {
     #[tracked]
     #[returns(clone)]
     pub(super) layout: Arc<TypeDeclarationLayout>,
+    /// Whether this definition resolves as an ordinary named type: neither
+    /// parameterized nor a constraint interface. See `TypeAliasProjection`.
+    #[tracked]
+    #[returns(copy)]
+    pub(super) ordinary: bool,
 }
 
 #[salsa::tracked(returns(clone))]
@@ -150,14 +163,13 @@ pub(in crate::compiler::db) fn package_type_aliases_product(
         }
         for alias in facts.type_aliases(db) {
             shadowed_predeclared.insert(alias.name(db).to_string());
-            if alias.syntax(db).type_parameters.is_none() {
+            if alias.ordinary(db) {
                 projections.insert(alias.name(db).to_string(), alias);
             }
         }
         for definition in facts.type_definitions(db) {
             shadowed_predeclared.insert(definition.name(db).to_string());
-            let syntax = definition.syntax(db);
-            if syntax.type_parameters.is_none() && !is_constraint_type(&syntax.underlying) {
+            if definition.ordinary(db) {
                 definitions.insert(definition.name(db).to_string(), definition);
             }
         }
@@ -171,6 +183,7 @@ pub(in crate::compiler::db) fn package_type_aliases_product(
 
     let mut resolved = BTreeMap::new();
     let mut stack = Vec::new();
+    let generic_types = generic::collect_generic_type_symbols(db, input);
     let context = TypeResolutionContext {
         db,
         input,
@@ -179,6 +192,7 @@ pub(in crate::compiler::db) fn package_type_aliases_product(
         constants: &constants,
         variables: &variables,
         shadowed_predeclared: &shadowed_predeclared,
+        generic_types: &generic_types,
     };
     let mut constant_cache = BTreeMap::new();
     let mut constant_stack = Vec::new();
@@ -232,11 +246,15 @@ pub(in crate::compiler::db) fn package_type_named_product(
         }
         for alias in facts.type_aliases(db) {
             shadowed_predeclared.insert(alias.name(db).to_string());
-            projections.insert(alias.name(db).to_string(), alias);
+            if alias.ordinary(db) {
+                projections.insert(alias.name(db).to_string(), alias);
+            }
         }
         for definition in facts.type_definitions(db) {
             shadowed_predeclared.insert(definition.name(db).to_string());
-            definitions.insert(definition.name(db).to_string(), definition);
+            if definition.ordinary(db) {
+                definitions.insert(definition.name(db).to_string(), definition);
+            }
         }
         for constant in facts.constants(db) {
             if constant.name(db).as_ref() != "_" {
@@ -252,6 +270,7 @@ pub(in crate::compiler::db) fn package_type_named_product(
         }));
     }
 
+    let generic_types = generic::collect_generic_type_symbols(db, input);
     let context = TypeResolutionContext {
         db,
         input,
@@ -260,6 +279,7 @@ pub(in crate::compiler::db) fn package_type_named_product(
         constants: &constants,
         variables: &variables,
         shadowed_predeclared: &shadowed_predeclared,
+        generic_types: &generic_types,
     };
     let mut resolved = BTreeMap::new();
     let mut constant_cache = BTreeMap::new();
@@ -278,7 +298,7 @@ pub(in crate::compiler::db) fn package_type_named_product(
     }))
 }
 
-fn is_constraint_type(expression: &ExprSyntax) -> bool {
+pub(super) fn is_constraint_type(expression: &ExprSyntax) -> bool {
     let ExprSyntaxKind::InterfaceType { methods } = &expression.kind else {
         return false;
     };
@@ -307,6 +327,7 @@ struct TypeResolutionContext<'db, 'declarations> {
     constants: &'declarations BTreeMap<String, ConstantProjection<'db>>,
     variables: &'declarations BTreeMap<String, VariableProjection<'db>>,
     shadowed_predeclared: &'declarations BTreeSet<String>,
+    generic_types: &'declarations BTreeMap<String, GenericTypeSymbol>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -384,12 +405,13 @@ fn resolve_type_name(
             resolved,
             &BTreeMap::new(),
             context.shadowed_predeclared,
+            context.generic_types,
             definition,
         )
     {
         return Ok(if is_definition {
             Ty::Named {
-                definition,
+                identity: named_type_identity(context, definition),
                 underlying: Box::new(target.underlying().clone()),
             }
         } else {
@@ -414,7 +436,9 @@ fn resolve_type_name(
                 .skip(start.saturating_add(1))
                 .any(|(_, guarded)| *guarded);
         if definitions_only && guarded {
-            return Ok(Ty::NamedRef { definition });
+            return Ok(Ty::NamedRef {
+                identity: named_type_identity(context, definition),
+            });
         }
         return Err(semantic_failure(
             definition,
@@ -436,6 +460,12 @@ fn resolve_type_name(
     stack.push((name.to_owned(), incoming_guarded));
     let mut dependencies = BTreeMap::new();
     collect_type_dependencies(&expression, &mut dependencies, false);
+    generic::collect_instantiation_dependencies(
+        &expression,
+        context.generic_types,
+        &mut dependencies,
+    );
+    let instantiation_names = dependencies.keys().cloned().collect::<Vec<_>>();
     for (dependency, guarded) in dependencies {
         if context.projections.contains_key(&dependency)
             || context.definitions.contains_key(&dependency)
@@ -485,12 +515,13 @@ fn resolve_type_name(
             resolved,
             &element_constants,
             context.shadowed_predeclared,
+            context.generic_types,
             definition,
         )?;
         resolved.insert(
             name.to_owned(),
             Ty::Named {
-                definition,
+                identity: named_type_identity(context, definition),
                 underlying: Box::new(Ty::Array(0, Box::new(element_ty))),
             },
         );
@@ -498,6 +529,7 @@ fn resolve_type_name(
 
     let mut referenced_names = BTreeSet::new();
     collect_all_expression_names(&expression, &mut referenced_names);
+    referenced_names.extend(instantiation_names);
     for referenced_name in &referenced_names {
         if resolved.contains_key(referenced_name)
             || (!context.projections.contains_key(referenced_name)
@@ -540,11 +572,12 @@ fn resolve_type_name(
         resolved,
         &constant_symbols,
         context.shadowed_predeclared,
+        context.generic_types,
         definition,
     )?;
     let ty = if is_definition {
         Ty::Named {
-            definition,
+            identity: named_type_identity(context, definition),
             underlying: Box::new(target.underlying().clone()),
         }
     } else {
@@ -600,6 +633,13 @@ fn resolve_type_name(
         }
     }
     Ok(ty)
+}
+
+fn named_type_identity(context: &TypeResolutionContext<'_, '_>, definition: DefId) -> NamedTypeId {
+    NamedTypeId::new(
+        QualifiedDefId::new(context.input.package(context.db), definition),
+        Arc::from([]),
+    )
 }
 
 fn fixed_array_element(expression: &ExprSyntax) -> Option<&ExprSyntax> {
@@ -873,6 +913,7 @@ fn lower_declaration_target(
     resolved: &BTreeMap<String, Ty>,
     constants: &BTreeMap<String, ConstantSymbol>,
     shadowed_predeclared: &BTreeSet<String>,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
     definition: DefId,
 ) -> Result<Ty, Arc<StageFailure>> {
     if let ExprSyntaxKind::Paren(inner) = &expression.kind {
@@ -881,6 +922,7 @@ fn lower_declaration_target(
             resolved,
             constants,
             shadowed_predeclared,
+            generic_types,
             definition,
         );
     }
@@ -910,15 +952,24 @@ fn lower_declaration_target(
             resolved,
             constants,
             shadowed_predeclared,
+            generic_types,
             definition,
         )?;
         return Ok(Ty::Array(length, Box::new(element)));
     }
-    crate::compiler::semantic::lower_type_with_constants(
-        expression,
-        resolved,
-        constants,
-        SourceRef::definition(definition),
-    )
-    .map_err(|diagnostic| semantic_failure(definition, diagnostic))
+    let source = SourceRef::definition(definition);
+    let lowered = if generic::expression_contains_instantiation(expression) {
+        crate::compiler::semantic::lower_type_with_generic_symbols(
+            expression,
+            resolved,
+            generic_types,
+            constants,
+            source,
+        )
+    } else {
+        crate::compiler::semantic::lower_type_with_constants(
+            expression, resolved, constants, source,
+        )
+    };
+    lowered.map_err(|diagnostic| semantic_failure(definition, diagnostic))
 }

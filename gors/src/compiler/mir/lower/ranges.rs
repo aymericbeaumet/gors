@@ -129,14 +129,10 @@ impl FunctionLowerer {
             Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 RangeKind::Array(*length)
             }
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-            {
-                RangeKind::Slice {
-                    len: hir::Builtin::SliceI64Len,
-                    index: hir::Builtin::SliceI64Index,
-                }
-            }
+            Ty::Slice(element) if element.uses_i64_slice_carrier() => RangeKind::Slice {
+                len: hir::Builtin::SliceI64Len,
+                index: hir::Builtin::SliceI64Index,
+            },
             Ty::Slice(element) if element.underlying() == &Ty::String => RangeKind::Slice {
                 len: hir::Builtin::SliceGoStringLen,
                 index: hir::Builtin::SliceGoStringIndex,

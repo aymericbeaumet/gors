@@ -220,7 +220,7 @@ impl Function {
                         "integer slice literal MIR omitted its slice type",
                     ));
                 };
-                if !matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                if !element.uses_i64_slice_carrier() {
                     return Err(Diagnostic::backend(format!(
                         "integer slice literal MIR has unsupported type {ty:?}"
                     )));
@@ -637,6 +637,8 @@ impl Function {
                                 | hir::Builtin::InterfaceUnboxGoString
                                 | hir::Builtin::InterfaceBoxGoSliceGoString
                                 | hir::Builtin::InterfaceUnboxGoSliceGoString
+                                | hir::Builtin::InterfaceBoxGoSliceI64
+                                | hir::Builtin::InterfaceUnboxGoSliceI64
                                 | hir::Builtin::InterfaceStructI64Get
                                 | hir::Builtin::InterfaceUnboxPointerI64
                                 | hir::Builtin::InterfaceUnboxPointerStructI64

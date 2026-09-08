@@ -437,3 +437,81 @@ fn string_slice_comment_edits_do_not_reexecute_semantic_stages() {
     assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
     assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 0);
 }
+
+#[test]
+fn integer_slices_keep_their_declared_element_kinds() {
+    // Every scalar integer element except `byte` shares the one i64 slice
+    // carrier, and `[]byte` keeps its own dense representation. Each element
+    // still selects width- and signedness-specific operations from its own
+    // declared kind, so wrapping, division, and shifts stay exact.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                u := []uintptr{1, 2, 3}
+                u = append(u, 18446744073709551615)
+                println(len(u), u[0], u[3], u[3]/3)
+
+                i8 := []int8{-128, 127}
+                println(i8[0], i8[1], i8[0]/2)
+
+                w := []uint16{65535, 1}
+                w[1] = 40000
+                println(w[0], w[1], w[0]>>1)
+
+                x := []int64{-9223372036854775808}
+                println(x[0])
+
+                var z []uint32
+                z = append(z, 4294967295)
+                println(len(z), z[0], z[0]+1)
+
+                b := []byte{1, 2}
+                b = append(b, 255)
+                println(len(b), b[2], string(b[:2]) == "\x01\x02")
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"4 1 18446744073709551615 6148914691236517205\n\
+          -128 127 -64\n\
+          65535 40000 32767\n\
+          -9223372036854775808\n\
+          1 4294967295 0\n\
+          3 255 true\n"
+    );
+}
+
+#[test]
+fn aggregate_struct_slices_report_their_length() {
+    // A slice of structs uses the tagged interface-slice representation, so
+    // its length is that representation's runtime operation. String and byte
+    // slices keep their own dense representations and must not be folded in.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Info struct {
+                Name    string
+                Removed int
+            }
+
+            var table = []Info{
+                {Name: "a", Removed: 24},
+                {Name: "b", Removed: 25},
+            }
+
+            func main() {
+                println(len(table))
+                local := table[1]
+                println(local.Name, local.Removed)
+                println(len([]string{"x", "y", "z"}), len([]int{1, 2}), len([]byte("abcd")))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2\nb 25\n3 2 4\n");
+}

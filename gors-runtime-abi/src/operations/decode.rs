@@ -173,6 +173,8 @@ impl TryFrom<u16> for RuntimeOp {
             157 => Ok(Self::GoSliceGoStringIsNil),
             158 => Ok(Self::GoInterfaceBoxGoSliceGoString),
             159 => Ok(Self::GoInterfaceUnboxGoSliceGoString),
+            225 => Ok(Self::GoInterfaceBoxGoSliceI64),
+            226 => Ok(Self::GoInterfaceUnboxGoSliceI64),
             160 => Ok(Self::PrintU64),
             161 => Ok(Self::GoMapStringI64RangeKeys),
             162 => Ok(Self::GoMapI64GoStringNil),

@@ -9,6 +9,11 @@ use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
 
+/// Dynamic type identity reserved for values that cannot exist. Every identity
+/// `Ty::dynamic_type_identity` produces is a non-empty tagged encoding, so no
+/// boxed value ever carries it.
+const UNDISPATCHABLE_TYPE_IDENTITY: &[u8] = b"";
+
 impl FunctionLowerer {
     pub(super) fn lower_interface_call_expr(
         &mut self,
@@ -43,37 +48,31 @@ impl FunctionLowerer {
         let result = (*result_ty != Ty::Unit).then(|| Place {
             local: self.new_temp(result_ty.clone()),
         });
-        for (index, candidate) in candidates.iter().enumerate() {
-            let last = index + 1 == candidates.len();
-            let next = if last {
-                None
-            } else {
-                let condition = Place {
-                    local: self.new_temp(Ty::Bool),
-                };
-                self.emit_map_call(
-                    hir::Builtin::InterfaceIsType,
-                    vec![
-                        receiver_operand.clone(),
-                        type_identity_operand(&candidate.type_identity),
-                    ],
-                    vec![condition],
-                    source,
-                )?;
-                let matched = self.new_block(provenance.clone());
-                let next = self.new_block(provenance.clone());
-                self.terminate(make_terminator(
-                    TerminatorKind::SwitchBool {
-                        condition: Operand::Read(condition),
-                        then_target: matched,
-                        else_target: next,
-                    },
-                    hir::Effects::default(),
-                    provenance.clone(),
-                ))?;
-                self.current = matched;
-                Some(next)
+        for candidate in candidates {
+            let condition = Place {
+                local: self.new_temp(Ty::Bool),
             };
+            self.emit_map_call(
+                hir::Builtin::InterfaceIsType,
+                vec![
+                    receiver_operand.clone(),
+                    type_identity_operand(&candidate.type_identity),
+                ],
+                vec![condition],
+                source,
+            )?;
+            let matched = self.new_block(provenance.clone());
+            let next = self.new_block(provenance.clone());
+            self.terminate(make_terminator(
+                TerminatorKind::SwitchBool {
+                    condition: Operand::Read(condition),
+                    then_target: matched,
+                    else_target: next,
+                },
+                hir::Effects::default(),
+                provenance.clone(),
+            ))?;
+            self.current = matched;
             self.emit_interface_candidate_call(
                 receiver_operand.clone(),
                 argument_operands.clone(),
@@ -82,10 +81,14 @@ impl FunctionLowerer {
                 join,
                 source,
             )?;
-            if let Some(next) = next {
-                self.current = next;
-            }
+            self.current = next;
         }
+        // A receiver matching no candidate has no method to run: the nil
+        // interface value always lands here, and Go requires a run-time panic
+        // rather than a call on a zero receiver. Extraction of a candidate's
+        // dynamic type cannot be trusted to raise it, because a receiver with
+        // no fields extracts without touching the boxed value.
+        self.emit_interface_dispatch_failure(receiver_operand, source)?;
         self.current = join;
         Ok(result.map_or(Operand::Unit, Operand::Read))
     }
@@ -528,6 +531,13 @@ impl FunctionLowerer {
                     ty.clone(),
                     source,
                 ),
+            Ty::Slice(element) if element.uses_i64_slice_carrier() => self.unbox_interface_scalar(
+                hir::Builtin::InterfaceUnboxGoSliceI64,
+                interface,
+                identity,
+                ty.clone(),
+                source,
+            ),
             Ty::Slice(element) if element.uses_interface_aggregate_representation() => self
                 .unbox_interface_scalar(
                     hir::Builtin::InterfaceUnboxAggregate,
@@ -587,6 +597,9 @@ impl FunctionLowerer {
             ),
             Ty::Slice(element) if element.underlying() == &Ty::String => {
                 (hir::Builtin::InterfaceBoxGoSliceGoString, value_operand)
+            }
+            Ty::Slice(element) if element.uses_i64_slice_carrier() => {
+                (hir::Builtin::InterfaceBoxGoSliceI64, value_operand)
             }
             Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                 (hir::Builtin::InterfaceBoxAggregate, value_operand)
@@ -759,6 +772,29 @@ impl FunctionLowerer {
                 target: join,
             },
             call_effects(),
+            Provenance::Source(source),
+        ))
+    }
+
+    /// Raise Go's run-time panic for an interface method call whose receiver
+    /// carries no dispatchable dynamic type, which every nil interface value
+    /// does. A checked extraction against the reserved identity always fails,
+    /// so it reports the failure through the runtime's own panic boundary.
+    fn emit_interface_dispatch_failure(
+        &mut self,
+        interface: Operand,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        self.unbox_interface_scalar(
+            hir::Builtin::InterfaceUnboxI64,
+            interface,
+            type_identity_operand(UNDISPATCHABLE_TYPE_IDENTITY),
+            Ty::Int(IntTy::Int),
+            source,
+        )?;
+        self.terminate(make_terminator(
+            TerminatorKind::Unreachable,
+            hir::Effects::default(),
             Provenance::Source(source),
         ))
     }

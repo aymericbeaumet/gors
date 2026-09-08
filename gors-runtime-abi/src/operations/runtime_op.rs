@@ -183,4 +183,8 @@ pub enum RuntimeOp {
     GoInterfaceBoxF32,
     /// Unbox an exact Go float32 into its physical `f64` carrier.
     GoInterfaceUnboxF32,
+    /// Box an integer-slice header, preserving its backing array.
+    GoInterfaceBoxGoSliceI64,
+    /// Unbox an integer-slice header after an exact dynamic type check.
+    GoInterfaceUnboxGoSliceI64,
 }

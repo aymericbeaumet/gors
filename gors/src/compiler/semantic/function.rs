@@ -9,7 +9,7 @@ use super::{
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{ClosureId, DefId, LocalId, LocalTypeId, NodeId};
+use crate::compiler::ids::{ClosureId, DefId, LocalId, LocalTypeId, NodeId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{BlockSyntax, FieldListSyntax, SyntaxSource};
 use crate::compiler::types::{ConstValue, Signature, Ty};
@@ -27,9 +27,9 @@ pub(super) struct FunctionLowerer {
     pub(super) next_control_target: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
-    pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
+    pub(super) methods: BTreeMap<(QualifiedDefId, String), MethodSymbol>,
     pub(super) generic_functions: BTreeMap<String, GenericFunctionSymbol>,
-    pub(super) generic_methods: BTreeMap<(DefId, String), GenericFunctionSymbol>,
+    pub(super) generic_methods: BTreeMap<(QualifiedDefId, String), GenericFunctionSymbol>,
     pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
@@ -67,20 +67,21 @@ impl FunctionLowerer {
         expression: &crate::compiler::syntax::ExprSyntax,
         source: SourceRef,
     ) -> Result<Ty, Diagnostic> {
-        let generic_base = match &expression.kind {
-            crate::compiler::syntax::ExprSyntaxKind::Index { base, .. }
-            | crate::compiler::syntax::ExprSyntaxKind::IndexList { base, .. } => match &base.kind {
-                crate::compiler::syntax::ExprSyntaxKind::Ident(base) => Some(base.name.as_ref()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if generic_base.is_some_and(|base| self.generic_types.contains_key(base)) {
-            return super::generics::lower_type_with_generics(
+        if super::generics::type_contains_instantiation(expression) {
+            return super::generics::lower_type_with_generic_constant_lookup(
                 expression,
                 &self.type_aliases,
                 &self.generic_types,
                 self.generic_method_environment(),
+                &|name| {
+                    self.lookup_local_constant(name)
+                        .map(|constant| (constant.ty.clone(), constant.value.clone()))
+                        .or_else(|| {
+                            self.constants
+                                .get(name)
+                                .map(|constant| (constant.ty.clone(), constant.value.clone()))
+                        })
+                },
                 source,
             );
         }
@@ -419,18 +420,18 @@ impl FunctionLowerer {
     }
 
     pub(super) fn expand_named_ref(&self, ty: &Ty) -> Result<Ty, Diagnostic> {
-        let Ty::NamedRef { definition } = ty else {
+        let Ty::NamedRef { identity } = ty else {
             return Ok(ty.clone());
         };
         self.type_aliases
             .values()
             .find(|candidate| {
-                matches!(candidate, Ty::Named { definition: candidate, .. } if candidate == definition)
+                matches!(candidate, Ty::Named { identity: candidate, .. } if candidate == identity)
             })
             .cloned()
             .ok_or_else(|| {
                 Diagnostic::backend(format!(
-                    "recursive named type {definition} is absent from the package type index"
+                    "recursive named type {identity:?} is absent from the package type index"
                 ))
             })
     }

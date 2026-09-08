@@ -7,11 +7,11 @@ use super::{
     FunctionSymbols, GenericFunctionSymbol, GenericTypeSymbol, PackageReferences, Ty,
     collect_constraint_expression_method_names, collect_receiver_name_definitions,
 };
-use crate::compiler::ids::DefId;
+use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, FieldListSyntax};
 
 pub(super) struct ConstraintMethodDependencies {
-    pub(super) receivers_by_method: BTreeMap<Arc<str>, BTreeSet<DefId>>,
+    pub(super) receivers_by_method: BTreeMap<Arc<str>, BTreeSet<QualifiedDefId>>,
     pub(super) fallback_methods: BTreeSet<Arc<str>>,
 }
 

@@ -50,10 +50,13 @@ impl RuntimeOp {
             (Self::PrintI64, 0) => IntegerKindConstraint::Signed,
             (Self::PrintU64, 0) => IntegerKindConstraint::Unsigned,
             (Self::GoInterfaceBoxI64, 1) => IntegerKindConstraint::Any,
-            (Self::GoSliceI64Set, 2) | (Self::GoSliceI64Append, 1) => {
-                IntegerKindConstraint::I64OrI32
-            }
+            // Every scalar integer element shares the one i64 carrier while
+            // keeping its own declared kind.
+            (Self::GoSliceI64Set, 2) | (Self::GoSliceI64Append, 1) => IntegerKindConstraint::Any,
             (Self::GoSliceU8Set, 2) => IntegerKindConstraint::Exact(IntegerKind::U8),
+            // A struct field keeps its own declared integer kind while the
+            // pointee stores every field in one shared `i64` carrier.
+            (Self::GoPointerStructI64Set, 2) => IntegerKindConstraint::Any,
             (Self::GoStringFromRune, 0) => IntegerKindConstraint::Any,
             _ => IntegerKindConstraint::Exact(IntegerKind::I64),
         }
@@ -67,7 +70,9 @@ impl RuntimeOp {
         match (self, position) {
             (Self::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
             (Self::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
-            (Self::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
+            // The carrier is shared; the field's declared kind is the result.
+            (Self::GoPointerStructI64Get, 0) => IntegerKindConstraint::Any,
+            (Self::GoSliceI64Index, 0) => IntegerKindConstraint::Any,
             (Self::GoSliceU8Index | Self::GoStringIndex, 0) => {
                 IntegerKindConstraint::Exact(IntegerKind::U8)
             }
@@ -356,6 +361,12 @@ impl RuntimeOp {
             ),
             Self::GoInterfaceUnboxGoSliceGoString => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceGoString)
+            }
+            Self::GoInterfaceBoxGoSliceI64 => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_GO_SLICE_I64, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceUnboxGoSliceI64 => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceI64)
             }
             Self::GoPointerStructI64Nil => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoPointerStructI64)

@@ -319,3 +319,86 @@ fn type_switches_bind_concrete_and_interface_case_values() {
     assert!(run.rust.contains("go_interface_unbox_i64"), "{}", run.rust);
     assert!(run.rust.contains("go_interface_is_nil"), "{}", run.rust);
 }
+
+#[test]
+fn nil_interface_method_calls_panic_instead_of_running_a_zero_receiver() {
+    // Dispatch tests every candidate, so a receiver carrying no dynamic type
+    // reaches none of them. Without an explicit failure the nil call would fall
+    // through to whichever candidate happened to be emitted last, and a
+    // zero-field receiver extracts without ever inspecting the boxed value, so
+    // the call would silently run on a zero receiver instead of panicking.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type talker interface{ Talk() string }
+
+            type speaker struct{}
+
+            func (speaker) Talk() string { return "speaker" }
+
+            type shouter struct{ volume int }
+
+            func (s shouter) Talk() string { return "shouter" }
+
+            func callNil() (recovered interface{}) {
+                defer func() { recovered = recover() }()
+                var value talker
+                _ = value.Talk()
+                return nil
+            }
+
+            func main() {
+                var value talker = speaker{}
+                println(value.Talk())
+                value = shouter{volume: 1}
+                println(value.Talk())
+
+                recovered := callNil()
+                println(recovered == nil)
+                _, isError := recovered.(error)
+                println(isError)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"speaker\nshouter\nfalse\ntrue\n");
+}
+
+#[test]
+fn integer_slices_box_and_extract_through_interfaces() {
+    // An integer slice carries its own dynamic identity, so it can be a field
+    // of an aggregate struct and can round-trip through an interface. The
+    // identity is per element kind, so an assertion to a different slice type
+    // must fail rather than alias the shared carrier.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Value struct {
+                Items []int
+                Count int
+            }
+
+            func main() {
+                value := Value{Items: []int{1, 2, 3}, Count: 7}
+                p := &value
+                println(len(p.Items), p.Items[1], p.Count)
+
+                var boxed interface{} = value.Items
+                got, ok := boxed.([]int)
+                println(ok, len(got), got[2])
+
+                _, wrongElement := boxed.([]string)
+                _, wrongWidth := boxed.([]int32)
+                println(wrongElement, wrongWidth)
+
+                var pointers interface{} = []uintptr{9}
+                back, isPointers := pointers.([]uintptr)
+                println(isPointers, back[0])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"3 2 7\ntrue 3 3\nfalse false\ntrue 9\n");
+}

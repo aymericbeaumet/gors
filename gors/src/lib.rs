@@ -142,6 +142,10 @@ pub mod workspace;
 #[path = "../build/platform.rs"]
 mod build_platform_tests;
 
+#[cfg(test)]
+#[path = "../build/sdk_archive.rs"]
+mod build_sdk_archive_tests;
+
 // Keep cross-target Go source-oracle behavior in the ordinary unit-test gate.
 #[cfg(test)]
 #[allow(dead_code)]

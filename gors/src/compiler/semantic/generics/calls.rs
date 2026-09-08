@@ -5,6 +5,7 @@ use crate::compiler::semantic::calls::{LoweredCallArguments, forwarded_call_resu
 use crate::compiler::semantic::member_resolution::{
     MethodLookup, ResolvedMember, resolve_selector_member_with,
 };
+use crate::compiler::types::Signature;
 
 fn flattened_call_argument_types(arguments: &[hir::Expr]) -> Vec<Ty> {
     if let [argument] = arguments
@@ -94,6 +95,7 @@ impl FunctionLowerer {
         validate_declared_constraints(
             symbol.header.type_parameters.as_ref(),
             &substitutions,
+            None,
             &self.type_aliases,
             &self.generic_types,
             self.generic_method_environment(),
@@ -357,6 +359,7 @@ impl FunctionLowerer {
         validate_declared_constraints(
             symbol.header.type_parameters.as_ref(),
             &substitutions,
+            None,
             &self.type_aliases,
             &self.generic_types,
             self.generic_method_environment(),
@@ -437,32 +440,19 @@ impl FunctionLowerer {
             .find(|generic| generic.id == definition)
             .cloned()
             .ok_or_else(|| Diagnostic::backend("generic method receiver type disappeared"))?;
-        let mut substitutions = BTreeMap::new();
-        let receiver_parameters = type_parameter_names(&generic_type.type_parameters, source)?;
         let selected_ty = &resolution.plan.selected_ty;
-        let inference_ty = match (symbol.pointer_receiver, selected_ty) {
-            (true, Ty::Pointer(_)) | (false, Ty::Named { .. }) => selected_ty.clone(),
-            (true, selected) => Ty::Pointer(Box::new(selected.clone())),
-            (false, Ty::Pointer(selected)) => selected.as_ref().clone(),
-            (false, selected) => selected.clone(),
-        };
-        infer_type_expression(
-            receiver_syntax,
-            &inference_ty,
-            &receiver_parameters,
-            &mut substitutions,
-            &self.type_aliases,
-            &self.generic_types,
-            self.generic_method_environment(),
-            source,
-        )?;
         let receiver_aliases = infer_receiver_parameter_aliases(
             receiver_syntax,
             &generic_type.type_parameters,
-            &substitutions,
+            named_receiver_identity(selected_ty)
+                .map(|identity| identity.arguments())
+                .ok_or_else(|| {
+                    Diagnostic::backend("generic method selected a non-named receiver")
+                })?,
             source,
         )?;
-        let mut body_substitutions = substitutions.clone();
+        let mut body_substitutions =
+            instantiated_receiver_substitutions(&generic_type, selected_ty, source)?;
         body_substitutions.extend(receiver_aliases);
         let method_parameter_names = body_substitutions.keys().cloned().collect::<BTreeSet<_>>();
         let ordinary_args = arguments
@@ -485,20 +475,14 @@ impl FunctionLowerer {
         validate_constraints(
             &generic_type.type_parameters,
             &body_substitutions,
+            named_receiver_identity(selected_ty).map(|identity| identity.arguments()),
             &self.type_aliases,
             &self.generic_types,
             self.generic_method_environment(),
             source,
         )?;
-        let receiver_ty = instantiate_generic_receiver(
-            &generic_type,
-            &substitutions,
-            symbol.pointer_receiver,
-            &self.type_aliases,
-            &self.generic_types,
-            self.generic_method_environment(),
-            source,
-        )?;
+        let receiver_ty =
+            instantiate_generic_receiver(selected_ty, symbol.pointer_receiver, source)?;
         let signature = instantiate_signature(
             &symbol.header,
             &body_substitutions,

@@ -1,0 +1,23 @@
+[tools]
+python = "3.13.15"
+rust = { version = "1.96.0", profile = "minimal", components = ["clippy", "rustfmt"] }
+
+[tasks."release:build"]
+description = "Build and package the native release for this host"
+run = "python scripts/release.py build"
+
+[tasks."release:smoke"]
+description = "Extract and smoke-test the packaged native release"
+run = "python scripts/release.py smoke"
+
+[tasks."release:validate"]
+description = "Verify all six release archives and smoke receipts, then write SHA256SUMS"
+run = "python scripts/release.py validate"
+
+[tasks."release:check-tag"]
+description = "Check that the requested release tag matches the CLI package version"
+run = "python scripts/release.py check-tag"
+
+[tasks."release:test"]
+description = "Test archive integrity, release completeness, and smoke admission"
+run = "python -m unittest discover -s scripts -p release_test.py"

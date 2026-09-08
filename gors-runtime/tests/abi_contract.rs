@@ -16,11 +16,12 @@ use gors_runtime::{
     go_channel_i64_send, go_channel_i64_try_receive, go_channel_i64_try_send,
     go_interface_box_aggregate, go_interface_box_bool, go_interface_box_comparable_aggregate,
     go_interface_box_f32, go_interface_box_f64, go_interface_box_go_slice_go_string,
-    go_interface_box_go_string, go_interface_box_i64, go_interface_box_pointer_i64,
-    go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_equal,
-    go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type, go_interface_nil,
-    go_interface_struct_i64_get, go_interface_unbox_aggregate, go_interface_unbox_bool,
-    go_interface_unbox_f32, go_interface_unbox_f64, go_interface_unbox_go_slice_go_string,
+    go_interface_box_go_slice_i64, go_interface_box_go_string, go_interface_box_i64,
+    go_interface_box_pointer_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
+    go_interface_equal, go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type,
+    go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_aggregate,
+    go_interface_unbox_bool, go_interface_unbox_f32, go_interface_unbox_f64,
+    go_interface_unbox_go_slice_go_string, go_interface_unbox_go_slice_i64,
     go_interface_unbox_go_string, go_interface_unbox_i64, go_interface_unbox_pointer_i64,
     go_interface_unbox_pointer_struct_i64, go_map_i64_go_string_clear,
     go_map_i64_go_string_contains, go_map_i64_go_string_delete, go_map_i64_go_string_get,
@@ -908,6 +909,16 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_interface_unbox_go_slice_go_string,
             fn(GoInterface, GoString) -> GoSliceGoString,
             [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::GoSliceGoString
+        ),
+        RuntimeOp::GoInterfaceBoxGoSliceI64 => runtime_surface!(
+            go_interface_box_go_slice_i64,
+            fn(GoString, GoSliceI64) -> GoInterface,
+            [RuntimeType::GoString, RuntimeType::GoSliceI64] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceUnboxGoSliceI64 => runtime_surface!(
+            go_interface_unbox_go_slice_i64,
+            fn(GoInterface, GoString) -> GoSliceI64,
+            [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::GoSliceI64
         ),
     }
 }

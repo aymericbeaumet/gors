@@ -616,3 +616,48 @@ fn sparse_inferred_arrays_and_slices_use_the_largest_constant_index() {
         b"10 0 1\n4 10 0 20 30\n7 true five six\n4 42\n11 11 90 100 0\n4 true one true three\n"
     );
 }
+
+#[test]
+fn package_array_initializers_infer_ellipsis_lengths_from_their_elements() {
+    // A `[...]T` literal takes its length from the literal itself: one past the
+    // highest initialized index, where an unkeyed element continues from the
+    // previous one. Package-level initializers must count that length rather
+    // than evaluate the elided length as a constant expression.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Experiment uint
+
+            const NoExperiment Experiment = 0
+
+            const (
+                AllocFree Experiment = 1 + iota
+                NumExperiments
+            )
+
+            var experiments = [...]string{
+                NoExperiment: "None",
+                AllocFree:    "AllocFree",
+            }
+
+            var plain = [...]int{10, 20, 30}
+            var sparse = [...]int{5: 50, 2: 20}
+            var resumed = [...]int{2: 20, 30, 40}
+            var empty = [...]int{}
+
+            func main() {
+                println(len(experiments), experiments[0], experiments[1])
+                println(len(plain), plain[2])
+                println(len(sparse), sparse[5], sparse[2], sparse[0])
+                println(len(resumed), resumed[3], resumed[4])
+                println(len(empty))
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"2 None AllocFree\n3 30\n6 50 20 0\n5 30 40\n0\n"
+    );
+}

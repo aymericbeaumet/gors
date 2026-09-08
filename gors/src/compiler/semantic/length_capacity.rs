@@ -400,14 +400,10 @@ fn runtime_builtin(
         {
             hir::Builtin::AggregateMapLen
         }
-        (LengthCapacityOp::Len, Ty::Slice(element))
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
+        (LengthCapacityOp::Len, Ty::Slice(element)) if element.uses_i64_slice_carrier() => {
             hir::Builtin::SliceI64Len
         }
-        (LengthCapacityOp::Cap, Ty::Slice(element))
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
+        (LengthCapacityOp::Cap, Ty::Slice(element)) if element.uses_i64_slice_carrier() => {
             hir::Builtin::SliceI64Cap
         }
         (LengthCapacityOp::Len, Ty::Slice(element))
@@ -415,9 +411,12 @@ fn runtime_builtin(
         {
             hir::Builtin::SliceU8Len
         }
+        // Every aggregate element shares the tagged interface-slice
+        // representation, so its length is the same runtime operation.
         (LengthCapacityOp::Len, Ty::Slice(element))
             if element.bootstrap_i64_struct_fields().is_some()
-                || matches!(element.underlying(), Ty::Interface(_)) =>
+                || matches!(element.underlying(), Ty::Interface(_))
+                || element.interface_aggregate_struct_fields().is_some() =>
         {
             hir::Builtin::AggregateSliceLen
         }

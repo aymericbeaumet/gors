@@ -604,3 +604,86 @@ fn check_only_predeclared_values_require_resolved_identity_and_iota_context() {
         );
     }
 }
+
+#[test]
+fn constant_bitwise_complement_follows_operand_signedness_and_width() {
+    // `^x` is `m ^ x`, with m all bits set for an unsigned operand and -1 for a
+    // signed or untyped one. `ptrSize` is the standard library's spelling of
+    // the target pointer width and exercises the unsigned width exactly.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const ptrSize = 4 << (^uintptr(0) >> 63)
+            const hiBits = 0x8080808080808080 >> (64 - 8*ptrSize)
+
+            type Width uint16
+
+            const namedComplement = ^Width(1)
+
+            func main() {
+                println(ptrSize, uint64(hiBits) == 0x8080808080808080)
+                println(^uint8(0), ^uint16(1), ^uint32(2))
+                println(^uint64(0) == 18446744073709551615)
+                println(^0, ^5, ^int8(3), ^int64(-1))
+                println(uint16(namedComplement))
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"8 true\n255 65534 4294967293\ntrue\n-1 -6 -4 0\n65534\n"
+    );
+}
+
+#[test]
+fn constant_conversions_admit_every_representable_value() {
+    // Conversion is wider than assignability: a `uint64` constant is never
+    // assignable to `int64`, yet every value up to that type's maximum
+    // converts exactly. This is how the standard library spells its integer
+    // limits.
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Celsius int32
+
+            const (
+                MaxUint16 = ^uint16(0)
+                MaxUint64 = ^uint64(0)
+                MaxInt64  = int64(MaxUint64 >> 1)
+            )
+
+            func main() {
+                println(MaxInt64)
+                println(int64(uint64(5)), int32(uint8(200)), uint64(int64(7)))
+                println(uint8(MaxUint16 >> 8))
+                println(int64(Celsius(-3)), int32(Celsius(9)))
+                println(int(2.0), float64(3))
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"9223372036854775807\n5 200 7\n255\n-3 9\n2 3\n"
+    );
+
+    // Representability still bounds the conversion exactly as Go does.
+    for source in [
+        "package main\nconst H = int64(uint64(18446744073709551615))\nfunc main() { println(H) }\n",
+        "package main\nconst H = int8(300)\nfunc main() { println(H) }\n",
+        "package main\nconst H = int(2.5)\nfunc main() { println(H) }\n",
+        "package main\nconst H = uint8(-1)\nfunc main() { println(H) }\n",
+        "package main\nconst H = int(\"abc\")\nfunc main() { println(H) }\n",
+    ] {
+        let errors = compile_file("main.go", source)
+            .err()
+            .expect("a constant outside the destination type must be rejected");
+        assert!(
+            errors.iter().any(|error| error.code == "GORS2002"),
+            "{errors:?}"
+        );
+    }
+}

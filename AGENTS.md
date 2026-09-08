@@ -106,6 +106,12 @@ The current identity boundary implements stable `WorkspaceId`, `PackageId`,
 nonpersistent until reusable syntax anchors exist. They may appear inside one
 revision's HIR or IR, but must not become independent query or CAS keys.
 
+Package named types retain a `NamedTypeId` containing the qualified declaration
+and ordered type arguments, including across imports and recursive references.
+Semantic equality uses `Ty::is_identical_to`; structural product equality also
+compares retained representation facts and is not Go type identity. Dynamic
+interface identities encode the same qualified identity and arguments.
+
 ### Explicit-order MIR
 
 MIR owns executable semantics. It must make these facts explicit before Rust is
@@ -213,8 +219,11 @@ append-only. `PrintF32` accepts the physical `f64` carrier, narrows it, and then
 uses Go's float32 shortest-round-trip formatting; it must never reuse float64
 formatting directly. Float interface values use distinct append-only
 `GoInterfaceBoxF32` and `GoInterfaceUnboxF32` runtime operations (IDs 223 and
-224), never the legacy float64 members. Contract 2.31.0 has canonical identity
-`e885c47239d38dd2942e64f40df07e6a1d4bda18c5e57f7fd9740cd6b547e351`.
+224), never the legacy float64 members. Integer-slice interface payloads use
+`GoInterfaceBoxGoSliceI64` and `GoInterfaceUnboxGoSliceI64` (IDs 225 and 226),
+preserving the slice's shared backing and exact dynamic type identity.
+Contract 2.32.0 has canonical identity
+`bcbbc3c20f1cff79cdd6d715fa8dd65ebd6cb2d1d78272ebaa42fc04d03d0996`.
 
 Verification derives each function's canonical `RuntimeRequirement` from its
 explicit operations and constants. Verified function products retain that set,
@@ -392,6 +401,12 @@ and serial bytes from a stale emulator or nonce must never settle a later
 flight. Rootfs download-error monitoring remains installed for the full
 emulator lifetime so lazy 9p failures invalidate a ready generation promptly.
 
+The pinned V86 file API reports both absent and zero-byte files as an ordinary
+error with the exact message `File not found`. Only stdout/stderr publications
+may treat that specific error as empty after the required numeric status is
+read. Preserve all other read failures; missing or malformed status remains a
+protocol failure.
+
 `www/v86/boot-contract.json` is the checked-in source of truth for V86 machine
 settings and the guest command/marker protocol. Webpack emits one strictly
 validated boot manifest whose full SHA-256 identity binds that contract, exact
@@ -450,6 +465,8 @@ not one global SDK-content fingerprint.
 The build host selects only the downloadable Go SDK archive. Cargo target
 OS/architecture select Go source build constraints (`wasm32-unknown-unknown`
 maps to `GOOS=js GOARCH=wasm`); target metadata must never fall back to the host.
+Windows SDKs use ZIP archives and `bin/go.exe`; Unix SDKs use tarballs and
+`bin/go`. The cleared Windows source-oracle environment retains `SystemRoot`.
 
 ### Incremental and parallel foundation
 
@@ -1048,6 +1065,12 @@ architecture contract. `COMPILER_AUDIT.md` records the broader architecture
 and roadmap.
 
 ## Development workflow
+
+Native release builds, archive smoke checks, and six-target validation run
+through the `release:*` mise tasks. Keep release policy in those tasks rather
+than duplicating it in Actions; see [releasing](docs/releasing.md), including
+the current Windows command support boundary. GitHub Pages publishes Actions
+artifacts, never a branch; see [deployment](docs/deployment.md).
 
 Fast local checks:
 

@@ -3,6 +3,8 @@
 /main*
 pkg/
 target/
+/dist/
+__pycache__/
 gors/tests/tools/go_oracle/go-oracle*
 gors_output/
 test-results/

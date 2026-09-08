@@ -453,6 +453,7 @@ fn lower_terminator(
                 | hir::Builtin::InterfaceBoxI64
                 | hir::Builtin::InterfaceBoxGoString
                 | hir::Builtin::InterfaceBoxGoSliceGoString
+                | hir::Builtin::InterfaceBoxGoSliceI64
                 | hir::Builtin::InterfaceBoxStructI64
                 | hir::Builtin::InterfaceBoxPointerI64
                 | hir::Builtin::InterfaceBoxPointerStructI64
@@ -472,6 +473,7 @@ fn lower_terminator(
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
                 | hir::Builtin::InterfaceUnboxGoSliceGoString
+                | hir::Builtin::InterfaceUnboxGoSliceI64
                 | hir::Builtin::InterfaceStructI64Get
                 | hir::Builtin::InterfaceUnboxPointerI64
                 | hir::Builtin::InterfaceUnboxPointerStructI64
@@ -621,6 +623,8 @@ fn lower_terminator(
                     hir::Builtin::InterfaceBoxGoSliceGoString => {
                         RuntimeOp::GoInterfaceBoxGoSliceGoString
                     }
+                    hir::Builtin::InterfaceBoxGoSliceI64 => RuntimeOp::GoInterfaceBoxGoSliceI64,
+                    hir::Builtin::InterfaceUnboxGoSliceI64 => RuntimeOp::GoInterfaceUnboxGoSliceI64,
                     hir::Builtin::InterfaceBoxStructI64 => RuntimeOp::GoInterfaceBoxStructI64,
                     hir::Builtin::InterfaceBoxPointerI64 => RuntimeOp::GoInterfaceBoxPointerI64,
                     hir::Builtin::InterfaceBoxPointerStructI64 => {

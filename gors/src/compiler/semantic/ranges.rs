@@ -58,10 +58,7 @@ impl FunctionLowerer {
                 (Ty::Int(IntTy::Int), element.as_ref().clone(), 2)
             }
             Ty::Slice(element)
-                if matches!(
-                    element.underlying(),
-                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::String
-                ) =>
+                if matches!(element.underlying(), Ty::Int(_) | Ty::Uint(_) | Ty::String) =>
             {
                 (Ty::Int(IntTy::Int), element.as_ref().clone(), 2)
             }
@@ -84,8 +81,7 @@ impl FunctionLowerer {
                 coerce_expr(&mut expression, &iteration_ty, source)?;
                 (iteration_ty, Ty::Unit, 1)
             }
-            Ty::Int(IntTy::Int | IntTy::Int32)
-            | Ty::Uint(crate::compiler::types::UintTy::Uint8) => (range_ty.clone(), Ty::Unit, 1),
+            Ty::Int(_) | Ty::Uint(_) => (range_ty.clone(), Ty::Unit, 1),
             ty => {
                 return Err(Diagnostic::unsupported(
                     format!("range is not yet implemented for {ty:?}"),

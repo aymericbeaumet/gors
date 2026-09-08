@@ -38,6 +38,7 @@ enum InterfacePayload {
     PointerI64(GoPointerI64),
     PointerStructI64(GoPointerStructI64),
     SliceGoString(GoSliceGoString),
+    SliceI64(GoSliceI64),
     Aggregate(GoSliceInterface),
     ComparableAggregate(GoSliceInterface),
 }
@@ -88,6 +89,12 @@ pub fn go_interface_box_go_slice_go_string(
     value: GoSliceGoString,
 ) -> GoInterface {
     boxed(type_identity, InterfacePayload::SliceGoString(value))
+}
+
+/// Copy an integer-slice header into an interface while preserving its backing array.
+#[must_use]
+pub fn go_interface_box_go_slice_i64(type_identity: GoString, value: GoSliceI64) -> GoInterface {
+    boxed(type_identity, InterfacePayload::SliceI64(value))
 }
 
 /// Snapshot an integer-field struct into an interface.
@@ -233,7 +240,8 @@ pub fn go_interface_equal(left: GoInterface, right: GoInterface) -> bool {
         (InterfacePayload::PointerStructI64(left), InterfacePayload::PointerStructI64(right)) => {
             go_pointer_struct_i64_equal(left.clone(), right.clone())
         }
-        (InterfacePayload::SliceGoString(_), InterfacePayload::SliceGoString(_)) => {
+        (InterfacePayload::SliceGoString(_), InterfacePayload::SliceGoString(_))
+        | (InterfacePayload::SliceI64(_), InterfacePayload::SliceI64(_)) => {
             uncomparable_interface_comparison()
         }
         (
@@ -300,6 +308,15 @@ pub fn go_interface_unbox_go_slice_go_string(
 ) -> GoSliceGoString {
     match checked_payload(value, type_identity) {
         InterfacePayload::SliceGoString(value) => value,
+        _ => type_assertion_failure(),
+    }
+}
+
+/// Extract an integer-slice header after checking its exact dynamic type.
+#[must_use]
+pub fn go_interface_unbox_go_slice_i64(value: GoInterface, type_identity: GoString) -> GoSliceI64 {
+    match checked_payload(value, type_identity) {
+        InterfacePayload::SliceI64(value) => value,
         _ => type_assertion_failure(),
     }
 }

@@ -1,4 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function replaceGoSource(page: Page, source: string): Promise<void> {
+	await page.locator(".go .monaco-editor .view-lines").click();
+	// Monaco chooses shortcuts from the emulated browser, which can differ
+	// from the host platform used by Playwright's ControlOrMeta modifier.
+	const isMac = await page.evaluate(() =>
+		navigator.userAgent.includes("Macintosh"),
+	);
+	await page.keyboard.press(isMac ? "Meta+A" : "Control+A");
+	await page.keyboard.insertText(source);
+}
 
 test("default showcase auto-compiles and updates after an edit", async ({
 	page,
@@ -24,11 +35,11 @@ test("default showcase auto-compiles and updates after an edit", async ({
 	await expect(consoleOutput).not.toContainText("$ rustc -o main main.rs");
 	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
 
-	await page.locator(".go .monaco-editor .view-lines").click();
-	await page.keyboard.press("ControlOrMeta+A");
-	await page.keyboard.type(
+	await replaceGoSource(
+		page,
 		["package main", "", "func main() {", "\tprintln(99)", "}"].join("\n"),
 	);
+	await expect(page.locator(".rust .monaco-editor")).toContainText("99");
 	await expect(consoleOutput).toContainText("gors transpiled", {
 		timeout: 8 * 60 * 1000,
 	});
@@ -77,12 +88,15 @@ test("compiles and runs a program end-to-end through the Linux VM", async ({
 	// A clean compile writes a zero-byte .compile.err, and Go's println writes
 	// to stderr so stdout's .run.out stays zero-byte too; v86 reports both empty
 	// files as missing, so this guards against regressing the empty read.
-	await page.locator(".go .monaco-editor .view-lines").click();
-	await page.keyboard.press("ControlOrMeta+A");
-	await page.keyboard.type(
+	await replaceGoSource(
+		page,
 		["package main", "", "func main() {", '\tprintln("gors-e2e-ok")', "}"].join(
 			"\n",
 		),
+	);
+	await expect(page.locator(".rust .monaco-editor")).toContainText(
+		"gors-e2e-ok",
+		{ timeout: 3 * 60 * 1000 },
 	);
 	await expect(consoleOutput).toContainText("gors transpiled", {
 		timeout: 3 * 60 * 1000,

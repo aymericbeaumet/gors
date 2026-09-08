@@ -130,6 +130,52 @@ pub(super) fn collect_variable_references(syntax: &VariableSyntax, names: &mut B
     }
 }
 
+/// Names a package variable initializer reads as values.
+///
+/// This is narrower than [`collect_variable_references`], which also feeds
+/// constant resolution and so must keep every name a literal mentions. A
+/// composite literal's element key is a field name for a struct literal and a
+/// constant index for an array literal; only a map literal's key is itself a
+/// value expression. Counting every key as a value makes a literal that names
+/// one of its own fields look like it depends on the variable it initializes,
+/// which is exactly the shape of `var Removed = []RemovedInfo{{Removed: 24}}`.
+pub(super) fn collect_variable_value_names(syntax: &VariableSyntax, names: &mut BTreeSet<String>) {
+    if let VariableValueSyntax::Expression(expression) = &syntax.value {
+        collect_value_names(expression, false, names);
+    }
+}
+
+fn collect_value_names(
+    expression: &ExprSyntax,
+    keys_are_values: bool,
+    names: &mut BTreeSet<String>,
+) {
+    let ExprSyntaxKind::CompositeLiteral { ty, elements } = &expression.kind else {
+        // Any other expression reads every name it mentions.
+        collect_all_expression_names(expression, names);
+        return;
+    };
+    if let Some(ty) = ty {
+        collect_all_expression_names(ty, names);
+    }
+    // An elided nested literal inherits its parent's element type, so a map's
+    // values are the only place a nested key stays a value expression.
+    let nested_keys_are_values = match ty {
+        Some(ty) => matches!(ty.kind, ExprSyntaxKind::MapType { .. }),
+        None => keys_are_values,
+    };
+    for element in &**elements {
+        if let ExprSyntaxKind::KeyValue { key, value } = &element.kind {
+            if nested_keys_are_values {
+                collect_value_names(key, nested_keys_are_values, names);
+            }
+            collect_value_names(value, nested_keys_are_values, names);
+        } else {
+            collect_value_names(element, nested_keys_are_values, names);
+        }
+    }
+}
+
 pub(super) fn collect_signature_type_references(
     header: &FunctionHeaderSyntax,
     names: &mut BTreeSet<String>,

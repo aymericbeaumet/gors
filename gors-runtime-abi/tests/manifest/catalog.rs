@@ -83,7 +83,7 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
         RuntimeOp::GoInterfaceUnboxF32.symbol(),
         "go_interface_unbox_f32"
     );
-    assert_eq!(RuntimeOp::ALL.len(), 219);
+    assert_eq!(RuntimeOp::ALL.len(), 221);
 
     let integer_ids = [
         [172, 173, 174, 8, 175, 176, 177, 178],
@@ -145,9 +145,9 @@ fn every_runtime_i64_slot_has_the_exact_semantic_integer_constraint() {
                 (RuntimeOp::GoInterfaceBoxI64, 1) | (RuntimeOp::GoStringFromRune, 0) => {
                     IntegerKindConstraint::Any
                 }
-                (RuntimeOp::GoSliceI64Set, 2) | (RuntimeOp::GoSliceI64Append, 1) => {
-                    IntegerKindConstraint::I64OrI32
-                }
+                (RuntimeOp::GoSliceI64Set, 2)
+                | (RuntimeOp::GoSliceI64Append, 1)
+                | (RuntimeOp::GoPointerStructI64Set, 2) => IntegerKindConstraint::Any,
                 (RuntimeOp::GoSliceU8Set, 2) => IntegerKindConstraint::Exact(IntegerKind::U8),
                 _ => IntegerKindConstraint::Exact(IntegerKind::I64),
             };
@@ -168,8 +168,9 @@ fn every_runtime_i64_slot_has_the_exact_semantic_integer_constraint() {
             result_slots += 1;
             let expected = match (*operation, position) {
                 (RuntimeOp::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
-                (RuntimeOp::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
-                (RuntimeOp::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
+                (RuntimeOp::GoInterfaceUnboxI64, 0)
+                | (RuntimeOp::GoPointerStructI64Get, 0)
+                | (RuntimeOp::GoSliceI64Index, 0) => IntegerKindConstraint::Any,
                 (RuntimeOp::GoSliceU8Index | RuntimeOp::GoStringIndex, 0) => {
                     IntegerKindConstraint::Exact(IntegerKind::U8)
                 }

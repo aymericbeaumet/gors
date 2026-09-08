@@ -122,7 +122,7 @@ pub(super) fn verify_representation_slice_call(
                 || !matches!(
                     destination.underlying(),
                     Ty::Slice(element)
-                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                        if element.uses_i64_slice_carrier()
                             || element.snapshot_function_result().is_some()
                 )
             {
@@ -262,7 +262,7 @@ fn slice_element(ty: &Ty) -> Option<&Ty> {
 fn is_i64_slice(ty: &Ty) -> bool {
     matches!(
         slice_element(ty).map(Ty::underlying),
-        Some(Ty::Int(IntTy::Int | IntTy::Int32))
+        Some(Ty::Int(_) | Ty::Uint(_))
     )
 }
 
@@ -415,10 +415,7 @@ pub(super) fn verify_i64_append_slice_call(
         )));
     };
     if destination_element != source_element
-        || !matches!(
-            destination_element.underlying(),
-            Ty::Int(IntTy::Int | IntTy::Int32)
-        )
+        || !matches!(destination_element.underlying(), Ty::Int(_) | Ty::Uint(_))
         || result != destination
     {
         return Err(Diagnostic::backend(format!(

@@ -5,12 +5,14 @@
 
 mod exact_float;
 mod exact_number;
+mod named;
 
 use num_bigint::BigInt;
 
-use super::ids::{DefId, LocalTypeId};
+use super::ids::LocalTypeId;
 
 pub use exact_number::ExactNumber;
+pub use named::NamedTypeId;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Ty {
@@ -21,13 +23,13 @@ pub enum Ty {
     Float(FloatTy),
     Complex(ComplexTy),
     Named {
-        definition: DefId,
+        identity: NamedTypeId,
         underlying: Box<Ty>,
     },
     /// A finite reference back to a package named type from within its own
     /// recursively guarded underlying representation.
     NamedRef {
-        definition: DefId,
+        identity: NamedTypeId,
     },
     LocalNamed {
         identity: LocalTypeId,
@@ -216,20 +218,36 @@ impl Ty {
             Self::Float(FloatTy::Float32) => "builtin:float32".to_owned(),
             Self::Float(FloatTy::Float64) => "builtin:float64".to_owned(),
             Self::String => "builtin:string".to_owned(),
-            Self::Named { definition, .. } | Self::NamedRef { definition } => {
-                format!("named:{definition}")
+            Self::Named { identity, .. } | Self::NamedRef { identity } => {
+                return identity.dynamic_identity();
             }
             Self::LocalNamed { identity, .. } => format!("local-named:{identity}"),
             Self::Pointer(element) => match element.as_ref() {
                 Self::Int(IntTy::Int) => "pointer:builtin:int".to_owned(),
-                Self::Named { definition, .. } => format!("pointer:named:{definition}"),
+                Self::Named { identity, .. } => {
+                    return Some(container_dynamic_identity(
+                        b"pointer",
+                        &identity.dynamic_identity()?,
+                    ));
+                }
                 Self::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
                 _ => return None,
             },
             Self::Slice(element) => match element.as_ref() {
                 Self::String => "slice:builtin:string".to_owned(),
-                Self::Named { definition, .. } | Self::NamedRef { definition } => {
-                    format!("slice:named:{definition}")
+                // Scalar integer elements share the one i64 slice carrier but
+                // keep distinct dynamic identities, exactly as Go does.
+                scalar
+                    if scalar.uses_i64_slice_carrier()
+                        && let Some(scalar) = scalar.dynamic_type_identity() =>
+                {
+                    return Some(container_dynamic_identity(b"slice", &scalar));
+                }
+                Self::Named { identity, .. } | Self::NamedRef { identity } => {
+                    return Some(container_dynamic_identity(
+                        b"slice",
+                        &identity.dynamic_identity()?,
+                    ));
                 }
                 Self::LocalNamed { identity, .. } => format!("slice:local-named:{identity}"),
                 _ => return None,
@@ -277,8 +295,24 @@ impl Ty {
         )
     }
 
+    /// Whether a slice of this element uses the shared `i64` slice carrier.
+    ///
+    /// `uint8` is excluded: a byte slice keeps its own dense representation,
+    /// so an element test that selects a runtime operation must not fold the
+    /// two together.
+    #[must_use]
+    pub fn uses_i64_slice_carrier(&self) -> bool {
+        matches!(self.underlying(), Self::Int(_) | Self::Uint(_))
+            && self.underlying() != &Self::Uint(UintTy::Uint8)
+    }
+
     /// Fields of a struct whose executable representation is a fixed array of
-    /// Go `int` values.
+    /// `i64` carriers.
+    ///
+    /// Every predeclared scalar integer type shares that one carrier, so each
+    /// field keeps its own declared kind while the storage stays uniform. Field
+    /// reads and writes therefore select width- and signedness-specific
+    /// operations from the field type, not from the carrier.
     #[must_use]
     pub fn bootstrap_i64_struct_fields(&self) -> Option<&[StructField]> {
         let Self::Struct(fields) = self.underlying() else {
@@ -286,7 +320,7 @@ impl Ty {
         };
         fields
             .iter()
-            .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int))
+            .all(|field| matches!(field.ty.underlying(), Self::Int(_) | Self::Uint(_)))
             .then_some(fields)
     }
 
@@ -331,6 +365,7 @@ impl Ty {
             Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
             Self::Slice(element) => {
                 element.underlying() == &Self::String
+                    || element.uses_i64_slice_carrier()
                     || element.uses_interface_aggregate_representation()
             }
             Self::Pointer(element) => {
@@ -360,11 +395,7 @@ impl Ty {
         if let Self::Slice(element) = self {
             return matches!(
                 element.underlying(),
-                Self::Bool
-                    | Self::Int(IntTy::Int | IntTy::Int32)
-                    | Self::Uint(UintTy::Uint8)
-                    | Self::String
-                    | Self::Interface(_)
+                Self::Bool | Self::Int(_) | Self::Uint(_) | Self::String | Self::Interface(_)
             ) || element.uses_interface_aggregate_representation()
                 || element.snapshot_function_result().is_some();
         }
@@ -497,6 +528,19 @@ impl Ty {
             | Self::Untyped(_) => None,
         }
     }
+}
+
+fn container_dynamic_identity(kind: &[u8], element: &[u8]) -> Vec<u8> {
+    let mut identity = Vec::with_capacity(kind.len() + element.len() + 16);
+    // Rust supports at most 64-bit address spaces, so these widenings are
+    // lossless on every target supported by the compiler.
+    let kind_len = kind.len() as u64;
+    let element_len = element.len() as u64;
+    identity.extend_from_slice(&kind_len.to_be_bytes());
+    identity.extend_from_slice(kind);
+    identity.extend_from_slice(&element_len.to_be_bytes());
+    identity.extend_from_slice(element);
+    identity
 }
 
 impl ConstValue {

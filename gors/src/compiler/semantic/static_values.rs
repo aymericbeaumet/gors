@@ -42,7 +42,17 @@ fn evaluate_expression(
         elements,
     } = &expression.kind
     {
-        let ty = lower_type_with_constants(literal_type, types, constants, source)?;
+        let ty = match ellipsis_array_element(literal_type) {
+            // `[...]T` takes its length from the literal itself, so the element
+            // type is lowered alone and the length is counted here rather than
+            // evaluated as a constant length expression.
+            Some(element_syntax) => {
+                let element = lower_type_with_constants(element_syntax, types, constants, source)?;
+                let length = ellipsis_array_length(elements, constants, types, functions, source)?;
+                Ty::Array(length, Box::new(element))
+            }
+            None => lower_type_with_constants(literal_type, types, constants, source)?,
+        };
         let value = match ty.underlying() {
             Ty::Array(_, _) => {
                 evaluate_array(&ty, elements, constants, types, functions, source, depth)?
@@ -170,6 +180,47 @@ fn evaluate_array(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(StaticValue::Array)
+}
+
+/// The element syntax of a `[...]T` literal type, if this is one.
+fn ellipsis_array_element(literal_type: &ExprSyntax) -> Option<&ExprSyntax> {
+    let ExprSyntaxKind::ArrayType {
+        length: Some(length),
+        element,
+    } = &literal_type.kind
+    else {
+        return None;
+    };
+    matches!(length.kind, ExprSyntaxKind::Unsupported("ellipsis")).then_some(element.as_ref())
+}
+
+/// The length of a `[...]T` literal: one past its highest initialized index,
+/// where an unkeyed element continues from the previous index.
+fn ellipsis_array_length(
+    elements: &[ExprSyntax],
+    constants: &BTreeMap<String, ConstantSymbol>,
+    types: &BTreeMap<String, Ty>,
+    functions: &BTreeMap<String, Arc<FunctionBodySyntax>>,
+    source: SourceRef,
+) -> Result<u64, Diagnostic> {
+    let mut next_index = 0_u64;
+    let mut length = 0_u64;
+    for element in elements {
+        let index = match &element.kind {
+            ExprSyntaxKind::KeyValue { key, .. } => {
+                let index = evaluate_array_index(key, constants, types, functions, source)?;
+                u64::try_from(index).map_err(|_| {
+                    Diagnostic::semantic("array literal index is outside u64", source)
+                })?
+            }
+            _ => next_index,
+        };
+        next_index = index.checked_add(1).ok_or_else(|| {
+            Diagnostic::semantic("array literal index exceeds the type domain", source)
+        })?;
+        length = length.max(next_index);
+    }
+    Ok(length)
 }
 
 fn evaluate_array_index(
